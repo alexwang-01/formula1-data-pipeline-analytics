@@ -65,7 +65,7 @@ flowchart LR
 2. Confirm the storage account, container, and storage credential in `notebooks/01-setup/01.Setup Project Environment.sql`.
 3. Run the setup notebook and `notebooks/06-orchestration/00.Create Control Tables.py` once.
 4. Upload the batch folders described in `data/data-usage-guide.md` to the landing volume.
-5. Configure the incremental refresh Lakeflow Job using the Bronze, Silver, and Gold notebooks in `docs/project-guide.md`.
+5. Configure the incremental refresh Lakeflow Job with the notebook tasks and dependencies listed in `docs/project-guide.md`.
 6. Configure the orchestration Lakeflow Job and schedule it as required.
 7. Run the analytics notebooks after the Gold tables are available.
 8. Build the AI/BI dashboard from the standings views and Gold tables described in `docs/project-guide.md`.
