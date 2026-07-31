@@ -6,7 +6,7 @@ The repository keeps one production notebook per Lakeflow task, with shared writ
 
 ## Architecture
 
-![Azure Databricks incremental lakehouse architecture](docs/diagrams/incremental-lakehouse-architecture.png)
+![Azure Databricks incremental lakehouse architecture](docs/diagrams/incremental-lakehouse-architecture-v2.png)
 
 The architecture separates the primary data path from the capabilities that
 operate across it. Lakeflow Jobs coordinates each batch, Unity Catalog governs
