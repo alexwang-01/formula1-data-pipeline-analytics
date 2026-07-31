@@ -8,12 +8,30 @@ The repository keeps one production notebook per Lakeflow task, with shared writ
 
 ![Azure Databricks incremental lakehouse architecture](docs/diagrams/incremental-lakehouse-architecture-v2.png)
 
-The architecture separates the primary data path from the capabilities that
-operate across it. Lakeflow Jobs coordinates each batch, Unity Catalog governs
-the data assets, ADLS Gen2 stores the landing files and Delta tables, and
-Databricks SQL serves the analytical model to the AI/BI dashboard.
+The architecture separates data movement from orchestration, governance, storage, and serving. Lakeflow Jobs coordinates each batch, Unity Catalog governs the data assets, ADLS Gen2 stores the landing files and Delta tables, and Databricks SQL serves the analytical model to the AI/BI dashboard.
 
-## Incremental Batch Workflow
+## Key Capabilities
+
+- Batch-oriented Bronze, Silver, and Gold processing controlled by a `p_batch_id` job parameter
+- Idempotent Bronze writes using Delta partition replacement and Silver/Gold upserts using Delta Lake `MERGE`
+- Lakeflow Jobs task dependencies, nested job execution, and control-table-based batch tracking
+- Unity Catalog governance over ADLS Gen2 landing files, Delta tables, and analytical views
+- A dimensional Gold model with reusable driver and constructor standings views
+- AI/BI dashboard pages for season standings and all-time performance comparisons
+
+## Pipeline Design
+
+### Layer Overview
+
+| Stage | Purpose | Incremental behavior |
+| --- | --- | --- |
+| Bronze | Ingest one folder of raw CSV and JSON files and add source metadata | Replace only the selected `batch_id` partition |
+| Silver | Validate, standardize, deduplicate, and organize entity data | Upsert the latest records with Delta `MERGE` |
+| Gold | Build race, constructor, and driver dimensions plus a unified session-results fact | Upsert dimensional and fact records with Delta `MERGE` |
+| Analytics | Produce season standings and all-time driver and constructor metrics | Query Gold tables through reusable SQL views and analyses |
+| Dashboard | Present championship standings and historical comparisons | Serve analytical results through Databricks SQL and AI/BI |
+
+### Incremental Batch Workflow
 
 ```mermaid
 flowchart LR
@@ -32,7 +50,7 @@ The Bronze, Silver, and Gold sections contain parallel entity-level tasks where
 their Lakeflow dependencies allow it. The orchestration job advances to the
 next folder only after the current batch is recorded as completed.
 
-## Gold Analytical Model
+### Gold Analytical Model
 
 ```mermaid
 erDiagram
@@ -84,61 +102,9 @@ The Gold layer uses a dimensional model with one session-results fact and three
 dimensions. Driver and constructor standings views aggregate this model for the
 dashboard.
 
-## What This Project Demonstrates
+## Lakeflow Job Execution
 
-- Azure Data Lake Storage access through a Unity Catalog external location and external volume
-- Incremental ingestion controlled by a `p_batch_id` job parameter
-- Idempotent Bronze writes with Delta partition replacement
-- Silver and Gold upserts with Delta Lake `MERGE`
-- Medallion architecture using Unity Catalog schemas
-- Lakeflow Jobs task dependencies and nested job execution
-- Control-table-based batch discovery and status tracking
-- SQL analytics views built from a dimensional Gold model
-- AI/BI dashboard pages for season standings and all-time performance
-
-## Repository Layout
-
-| Path | Purpose |
-| --- | --- |
-| `notebooks/00-common` | Shared configuration and Bronze, Silver, and Gold write helpers |
-| `notebooks/01-setup` | Unity Catalog, schemas, external location, and volume setup |
-| `notebooks/02-bronze` | Six raw-file ingestion tasks |
-| `notebooks/03-silver` | Six cleansing and entity upsert tasks |
-| `notebooks/04-gold` | Dimensions, nationality reference, and session-results fact |
-| `notebooks/05-analytics` | Season standings views and all-time driver and constructor analyses |
-| `notebooks/06-orchestration` | Batch control table and orchestration tasks |
-| `docs/diagrams` | High-level architecture diagrams |
-| `docs/Screenshots/Lakeflow_Jobs` | Lakeflow Jobs run graphs |
-| `docs/Screenshots/Dashboard` | AI/BI dashboard screenshots |
-| `docs/project-guide.md` | Detailed execution order, runtime objects, and Lakeflow task mapping |
-| `data/data-usage-guide.md` | Landing data layout and how batches are used by the pipeline |
-
-## Pipeline Layers
-
-**Bronze:** Reads the files for one batch folder, adds source metadata and `batch_id`, then replaces only that batch partition.
-
-**Silver:** Filters the selected Bronze batch, standardizes schemas and values, removes invalid or duplicate records, and merges the latest batch into entity tables.
-
-**Gold:** Builds race, constructor, and driver dimensions plus a unified `fact_session_results` table for race and sprint sessions.
-
-**Analytics:** Creates ranked season standings views and aggregates them into all-time driver and constructor comparisons.
-
-**Dashboard:** Presents season standings, championship comparisons, and all-time driver and constructor performance from the analytical model.
-
-## Running the Project
-
-1. Connect this repository to a Databricks Git folder.
-2. Confirm the storage account, container, and storage credential in `notebooks/01-setup/01.Setup Project Environment.sql`.
-3. Run the setup notebook and `notebooks/06-orchestration/00.Create Control Tables.py` once.
-4. Upload the batch folders described in `data/data-usage-guide.md` to the landing volume.
-5. Configure the incremental refresh Lakeflow Job with the notebook tasks and dependencies listed in `docs/project-guide.md`.
-6. Configure the orchestration Lakeflow Job and schedule it as required.
-7. Run the analytics notebooks after the Gold tables are available.
-8. Build the AI/BI dashboard from the standings views and Gold tables described in `docs/project-guide.md`.
-
-These source-format notebooks are designed to execute in Azure Databricks. GitHub displays and versions the code, documentation, and screenshots, but it does not execute the Databricks pipeline.
-
-## Lakeflow Job Orchestration
+The orchestration job identifies an unprocessed batch, creates its control record, invokes the incremental refresh job, and marks the batch as completed after all dependent tasks succeed.
 
 ### Incremental Refresh Job
 
@@ -159,13 +125,11 @@ The dashboard is organized into four analytical pages:
 | Dominant Drivers of All Time | Career performance comparisons across seasons |
 | Dominant Teams of All Time | Constructor performance comparisons across seasons |
 
-The all-time pages use a project-defined `greatness_score` to provide a simple
-comparison across championship winners:
+The all-time pages use a project-defined `greatness_score` to provide a simple comparison across championship winners:
 
 `championships * 100 + wins * 10 + podiums * 3`
 
-This score is an analytical feature of the project rather than an official
-championship ranking.
+This score is an analytical feature of the project rather than an official championship ranking.
 
 ### Driver Championship Standings
 
@@ -182,3 +146,33 @@ championship ranking.
 ### Dominant Teams of All Time
 
 ![Dominant teams of all time dashboard](docs/Screenshots/Dashboard/dominant_teams_all_time.png)
+
+## Repository Layout
+
+| Path | Purpose |
+| --- | --- |
+| `notebooks/00-common` | Shared configuration and Bronze, Silver, and Gold write helpers |
+| `notebooks/01-setup` | Unity Catalog, schemas, external location, and volume setup |
+| `notebooks/02-bronze` | Six raw-file ingestion tasks |
+| `notebooks/03-silver` | Six cleansing and entity upsert tasks |
+| `notebooks/04-gold` | Dimensions, nationality reference, and session-results fact |
+| `notebooks/05-analytics` | Season standings views and all-time driver and constructor analyses |
+| `notebooks/06-orchestration` | Batch control table and orchestration tasks |
+| `docs/diagrams` | High-level architecture diagrams |
+| `docs/Screenshots/Lakeflow_Jobs` | Lakeflow Jobs run graphs |
+| `docs/Screenshots/Dashboard` | AI/BI dashboard screenshots |
+| `docs/project-guide.md` | Detailed execution order, runtime objects, and Lakeflow task mapping |
+| `data/data-usage-guide.md` | Landing data layout and how batches are used by the pipeline |
+
+## Running the Project
+
+1. Connect this repository to a Databricks Git folder.
+2. Confirm the storage account, container, and storage credential in `notebooks/01-setup/01.Setup Project Environment.sql`.
+3. Run the setup notebook and `notebooks/06-orchestration/00.Create Control Tables.py` once.
+4. Upload the batch folders described in `data/data-usage-guide.md` to the landing volume.
+5. Configure the incremental refresh Lakeflow Job with the notebook tasks and dependencies listed in `docs/project-guide.md`.
+6. Configure the orchestration Lakeflow Job and schedule it as required.
+7. Run the analytics notebooks after the Gold tables are available.
+8. Build the AI/BI dashboard from the standings views and Gold tables described in `docs/project-guide.md`.
+
+These source-format notebooks are designed to execute in Azure Databricks. GitHub displays and versions the code, documentation, and screenshots, but it does not execute the Databricks pipeline.
