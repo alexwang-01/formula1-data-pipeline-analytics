@@ -68,7 +68,7 @@ Each Silver task depends on its matching Bronze task.
 
 The resulting model contains `dim_races`, `dim_constructors`, `dim_drivers`, and `fact_session_results`.
 
-![Successful incremental refresh task graph](Screenshots/Lakeflow_Jobs/incremental_refresh_success.png)
+![Incremental refresh task graph](Screenshots/Lakeflow_Jobs/incremental_refresh_success.png)
 
 ## Batch Orchestration Job
 
@@ -95,7 +95,7 @@ Use the following dynamic values in the orchestration job:
 
 The control table records `in_progress` and `completed` status. If no unprocessed folder exists, the condition ends the workflow without launching the refresh job.
 
-![Successful batch orchestration task graph](Screenshots/Lakeflow_Jobs/batch_orchestration_success.png)
+![Batch orchestration task graph](Screenshots/Lakeflow_Jobs/batch_orchestration_success.png)
 
 ## Analytics
 
@@ -116,7 +116,7 @@ project-defined comparison score:
 
 `greatness_score = championships * 100 + wins * 10 + podiums * 3`
 
-The score supports dashboard comparison and is not an official Formula 1
+The score supports dashboard comparison and is not an official championship
 ranking.
 
 ## AI/BI Dashboard

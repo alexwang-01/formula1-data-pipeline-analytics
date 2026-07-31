@@ -1,23 +1,88 @@
-# Formula 1 Databricks Incremental Pipeline
+# Azure Databricks Incremental Lakehouse Pipeline & Analytics Dashboard
 
-This project implements a batch-oriented incremental lakehouse pipeline on Azure Databricks. It processes Formula 1 data through Bronze, Silver, and Gold layers, coordinates each batch with Lakeflow Jobs, publishes driver and constructor standings as SQL views, and presents the analytical model through an AI/BI dashboard.
+This project implements a batch-oriented incremental lakehouse pipeline on Azure Databricks. It processes motorsport race data through Bronze, Silver, and Gold layers, coordinates each batch with Lakeflow Jobs, publishes driver and constructor standings as SQL views, and presents the analytical model through an AI/BI dashboard.
 
 The repository keeps one production notebook per Lakeflow task, with shared write logic separated into reusable helper notebooks.
 
 ## Architecture
 
+![Azure Databricks incremental lakehouse architecture](docs/diagrams/incremental-lakehouse-architecture.png)
+
+The architecture separates the primary data path from the capabilities that
+operate across it. Lakeflow Jobs coordinates each batch, Unity Catalog governs
+the data assets, ADLS Gen2 stores the landing files and Delta tables, and
+Databricks SQL serves the analytical model to the AI/BI dashboard.
+
+## Incremental Batch Workflow
+
 ```mermaid
 flowchart LR
-    A["ADLS landing folders<br/>2025-01, 2025-02, ..."] --> B["Bronze<br/>batch-partitioned Delta tables"]
-    B --> C["Silver<br/>validated and merged entities"]
-    C --> D["Gold<br/>dimensions and session-results fact"]
-    D --> E["Analytics views<br/>driver and constructor standings"]
-    E --> F["AI/BI dashboard<br/>season and all-time analysis"]
-    G["Control table<br/>batch status"] --> H["Orchestration job"]
-    H --> I["Incremental refresh job"]
-    I --> G
-    I --> B
+    A["Scheduled orchestration"] --> B["Identify next<br/>unprocessed batch"]
+    B --> C{"Batch available?"}
+    C -- "No" --> D["End"]
+    C -- "Yes" --> E["Create control record<br/>status: in_progress"]
+    E --> F["Run incremental refresh<br/>with p_batch_id"]
+    F --> G["Bronze tasks<br/>replace batch partition"]
+    G --> H["Silver tasks<br/>Delta MERGE"]
+    H --> I["Gold tasks<br/>Delta MERGE"]
+    I --> J["Complete batch<br/>status: completed"]
 ```
+
+The Bronze, Silver, and Gold sections contain parallel entity-level tasks where
+their Lakeflow dependencies allow it. The orchestration job advances to the
+next folder only after the current batch is recorded as completed.
+
+## Gold Analytical Model
+
+```mermaid
+erDiagram
+    DIM_RACES ||--o{ FACT_SESSION_RESULTS : "season + round"
+    DIM_CONSTRUCTORS ||--o{ FACT_SESSION_RESULTS : "constructor_id"
+    DIM_DRIVERS ||--o{ FACT_SESSION_RESULTS : "driver_id"
+
+    DIM_RACES {
+        int season PK
+        int round PK
+        string race_name
+        date race_date
+        string circuit_name
+        string locality
+        string country
+    }
+
+    DIM_CONSTRUCTORS {
+        int constructor_id PK
+        string constructor_name
+        string nationality
+        string nationality_region
+    }
+
+    DIM_DRIVERS {
+        int driver_id PK
+        string driver_name
+        date date_of_birth
+        string nationality
+        string nationality_region
+    }
+
+    FACT_SESSION_RESULTS {
+        int season PK, FK
+        int round PK, FK
+        string session_type PK
+        int constructor_id PK, FK
+        int driver_id PK, FK
+        int grid_position
+        int completed_laps
+        int points
+        int final_position
+        boolean is_win
+        boolean is_podium
+    }
+```
+
+The Gold layer uses a dimensional model with one session-results fact and three
+dimensions. Driver and constructor standings views aggregate this model for the
+dashboard.
 
 ## What This Project Demonstrates
 
@@ -42,7 +107,8 @@ flowchart LR
 | `notebooks/04-gold` | Dimensions, nationality reference, and session-results fact |
 | `notebooks/05-analytics` | Season standings views and all-time driver and constructor analyses |
 | `notebooks/06-orchestration` | Batch control table and orchestration tasks |
-| `docs/Screenshots/Lakeflow_Jobs` | Successful Lakeflow Jobs run graphs |
+| `docs/diagrams` | High-level architecture diagrams |
+| `docs/Screenshots/Lakeflow_Jobs` | Lakeflow Jobs run graphs |
 | `docs/Screenshots/Dashboard` | AI/BI dashboard screenshots |
 | `docs/project-guide.md` | Detailed execution order, runtime objects, and Lakeflow task mapping |
 | `data/data-usage-guide.md` | Landing data layout and how batches are used by the pipeline |
@@ -72,15 +138,15 @@ flowchart LR
 
 These source-format notebooks are designed to execute in Azure Databricks. GitHub displays and versions the code, documentation, and screenshots, but it does not execute the Databricks pipeline.
 
-## Successful Lakeflow Runs
+## Lakeflow Job Orchestration
 
-### Incremental Refresh
+### Incremental Refresh Job
 
-![Successful incremental refresh Lakeflow Job](docs/Screenshots/Lakeflow_Jobs/incremental_refresh_success.png)
+![Incremental refresh Lakeflow Job](docs/Screenshots/Lakeflow_Jobs/incremental_refresh_success.png)
 
-### Batch Orchestration
+### Batch Orchestration Job
 
-![Successful batch orchestration Lakeflow Job](docs/Screenshots/Lakeflow_Jobs/batch_orchestration_success.png)
+![Batch orchestration Lakeflow Job](docs/Screenshots/Lakeflow_Jobs/batch_orchestration_success.png)
 
 ## AI/BI Dashboard
 
@@ -99,7 +165,7 @@ comparison across championship winners:
 `championships * 100 + wins * 10 + podiums * 3`
 
 This score is an analytical feature of the project rather than an official
-Formula 1 ranking.
+championship ranking.
 
 ### Driver Championship Standings
 
