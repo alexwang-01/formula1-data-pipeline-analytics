@@ -40,7 +40,7 @@ flowchart LR
 | `notebooks/02-bronze` | Six raw-file ingestion tasks |
 | `notebooks/03-silver` | Six cleansing and entity upsert tasks |
 | `notebooks/04-gold` | Dimensions, nationality reference, and session-results fact |
-| `notebooks/05-analytics` | Driver and constructor standings views |
+| `notebooks/05-analytics` | Season standings views and all-time driver and constructor analyses |
 | `notebooks/06-orchestration` | Batch control table and orchestration tasks |
 | `docs/Screenshots/Lakeflow_Jobs` | Successful Lakeflow Jobs run graphs |
 | `docs/Screenshots/Dashboard` | AI/BI dashboard screenshots |
@@ -55,7 +55,7 @@ flowchart LR
 
 **Gold:** Builds race, constructor, and driver dimensions plus a unified `fact_session_results` table for race and sprint sessions.
 
-**Analytics:** Creates ranked driver and constructor standings views from the Gold fact and dimensions.
+**Analytics:** Creates ranked season standings views and aggregates them into all-time driver and constructor comparisons.
 
 **Dashboard:** Presents season standings, championship comparisons, and all-time driver and constructor performance from the analytical model.
 
@@ -92,3 +92,27 @@ The dashboard is organized into four analytical pages:
 | Constructor Championship Standings | Constructor rank, points, wins, and podiums for a selected season |
 | Dominant Drivers of All Time | Career performance comparisons across seasons |
 | Dominant Teams of All Time | Constructor performance comparisons across seasons |
+
+The all-time pages use a project-defined `greatness_score` to provide a simple
+comparison across championship winners:
+
+`championships * 100 + wins * 10 + podiums * 3`
+
+This score is an analytical feature of the project rather than an official
+Formula 1 ranking.
+
+### Driver Championship Standings
+
+![Driver championship standings dashboard](docs/Screenshots/Dashboard/driver_championship_standings.png)
+
+### Constructor Championship Standings
+
+![Constructor championship standings dashboard](docs/Screenshots/Dashboard/constructor_championship_standings.png)
+
+### Dominant Drivers of All Time
+
+![Dominant drivers of all time dashboard](docs/Screenshots/Dashboard/dominant_drivers_all_time.png)
+
+### Dominant Teams of All Time
+
+![Dominant teams of all time dashboard](docs/Screenshots/Dashboard/dominant_teams_all_time.png)

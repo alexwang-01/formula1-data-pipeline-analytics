@@ -105,8 +105,19 @@ Run these notebooks after the Gold model has been built:
 | --- | --- |
 | `05-analytics/01.Build Driver Standings View.sql` | `formula1_incr.gold.v_driver_standing` |
 | `05-analytics/02.Build Constructor Standings View.sql` | `formula1_incr.gold.v_constructor_standing` |
+| `05-analytics/03.Analyze Dominant Drivers.sql` | All-time driver comparison result set |
+| `05-analytics/04.Analyze Dominant Constructors.sql` | All-time constructor comparison result set |
 
 The views aggregate championship points from race and sprint sessions. Race starts, wins, and podiums use race sessions only, and a window function calculates each season's standings.
+
+The two all-time analyses aggregate the standings views across seasons and keep
+drivers or constructors that have finished a season in first place. They use a
+project-defined comparison score:
+
+`greatness_score = championships * 100 + wins * 10 + podiums * 3`
+
+The score supports dashboard comparison and is not an official Formula 1
+ranking.
 
 ## AI/BI Dashboard
 
@@ -116,7 +127,18 @@ Create the dashboard from the accumulated Gold model and the two standings views
 | --- | --- | --- |
 | Driver Championship Standings | `v_driver_standing` | Season filter, standing, points, wins, and podiums by driver |
 | Constructor Championship Standings | `v_constructor_standing` | Season filter, standing, points, wins, and podiums by constructor |
-| Dominant Drivers of All Time | `fact_session_results`, `dim_drivers` | Driver performance aggregated across seasons |
-| Dominant Teams of All Time | `fact_session_results`, `dim_constructors` | Constructor performance aggregated across seasons |
+| Dominant Drivers of All Time | `03.Analyze Dominant Drivers.sql` | Wins, podiums, championships, races, and greatness score |
+| Dominant Teams of All Time | `04.Analyze Dominant Constructors.sql` | Wins, podiums, championships, races, and greatness score |
 
-The season pages use the ranked views directly. The all-time pages aggregate the Gold fact across seasons and join the relevant dimension for display names and nationality attributes.
+The season pages use the ranked views directly. The all-time SQL files
+aggregate those same views across seasons to create career-level comparisons.
+
+### Dashboard Screenshots
+
+![Driver championship standings](Screenshots/Dashboard/driver_championship_standings.png)
+
+![Constructor championship standings](Screenshots/Dashboard/constructor_championship_standings.png)
+
+![Dominant drivers of all time](Screenshots/Dashboard/dominant_drivers_all_time.png)
+
+![Dominant teams of all time](Screenshots/Dashboard/dominant_teams_all_time.png)
