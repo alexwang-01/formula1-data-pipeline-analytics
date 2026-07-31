@@ -2,7 +2,7 @@
 
 This project implements a batch-oriented incremental lakehouse pipeline on Azure Databricks. It processes motorsport race data through Bronze, Silver, and Gold layers, coordinates each batch with Lakeflow Jobs, publishes driver and constructor standings as SQL views, and presents the analytical model through an AI/BI dashboard.
 
-The repository keeps one production notebook per Lakeflow task, with shared write logic separated into reusable helper notebooks.
+The repository keeps one notebook per Lakeflow task, with shared write logic separated into reusable helper notebooks.
 
 ## Architecture
 
@@ -17,7 +17,7 @@ The architecture separates data movement from orchestration, governance, storage
 - Lakeflow Jobs task dependencies, nested job execution, and control-table-based batch tracking
 - Unity Catalog governance over ADLS Gen2 landing files, Delta tables, and analytical views
 - A dimensional Gold model with reusable driver and constructor standings views
-- AI/BI dashboard pages for season standings and all-time performance comparisons
+- AI/BI dashboard pages for season-specific driver and constructor standings and historical performance comparisons
 
 ## Pipeline Design
 
@@ -28,14 +28,14 @@ The architecture separates data movement from orchestration, governance, storage
 | Bronze | Ingest one folder of raw CSV and JSON files and add source metadata | Replace only the selected `batch_id` partition |
 | Silver | Validate, standardize, deduplicate, and organize entity data | Upsert the latest records with Delta `MERGE` |
 | Gold | Build race, constructor, and driver dimensions plus a unified session-results fact | Upsert dimensional and fact records with Delta `MERGE` |
-| Analytics | Produce season standings and all-time driver and constructor metrics | Query Gold tables through reusable SQL views and analyses |
+| Analytics | Produce season-specific standings and historical driver and constructor metrics | Query Gold tables through reusable SQL views and analyses |
 | Dashboard | Present championship standings and historical comparisons | Serve analytical results through Databricks SQL and AI/BI |
 
 ### Incremental Batch Workflow
 
 ```mermaid
 flowchart LR
-    A["Scheduled orchestration"] --> B["Identify next<br/>unprocessed batch"]
+    A["Orchestration job run"] --> B["Identify next<br/>unprocessed batch"]
     B --> C{"Batch available?"}
     C -- "No" --> D["End"]
     C -- "Yes" --> E["Create control record<br/>status: in_progress"]
@@ -47,8 +47,9 @@ flowchart LR
 ```
 
 The Bronze, Silver, and Gold sections contain parallel entity-level tasks where
-their Lakeflow dependencies allow it. The orchestration job advances to the
-next folder only after the current batch is recorded as completed.
+their Lakeflow dependencies allow it. Each orchestration run processes at most
+one batch folder. Later runs skip batches already marked as `in_progress` or
+`completed` when selecting the next available folder.
 
 ### Gold Analytical Model
 
@@ -100,7 +101,8 @@ erDiagram
 
 The Gold layer uses a dimensional model with one session-results fact and three
 dimensions. Driver and constructor standings views aggregate this model for the
-dashboard.
+dashboard. The PK and FK labels show logical relationships between tables; the
+notebooks do not create enforced key constraints.
 
 ## Lakeflow Job Execution
 
@@ -122,10 +124,10 @@ The dashboard is organized into four analytical pages:
 | --- | --- |
 | Driver Championship Standings | Driver rank, points, wins, and podiums for a selected season |
 | Constructor Championship Standings | Constructor rank, points, wins, and podiums for a selected season |
-| Dominant Drivers of All Time | Career performance comparisons across seasons |
-| Dominant Teams of All Time | Constructor performance comparisons across seasons |
+| Dominant Drivers of All Time | Career totals across available seasons for championship-winning drivers |
+| Dominant Teams of All Time | Historical totals across available seasons for championship-winning constructors |
 
-The all-time pages use a project-defined `greatness_score` to provide a simple comparison across championship winners:
+The two historical pages use a project-defined `greatness_score` to compare championship-winning drivers and constructors:
 
 `championships * 100 + wins * 10 + podiums * 3`
 
@@ -156,7 +158,7 @@ This score is an analytical feature of the project rather than an official champ
 | `notebooks/02-bronze` | Six raw-file ingestion tasks |
 | `notebooks/03-silver` | Six cleansing and entity upsert tasks |
 | `notebooks/04-gold` | Dimensions, nationality reference, and session-results fact |
-| `notebooks/05-analytics` | Season standings views and all-time driver and constructor analyses |
+| `notebooks/05-analytics` | Season-specific standings views and historical driver and constructor analyses |
 | `notebooks/06-orchestration` | Batch control table and orchestration tasks |
 | `docs/diagrams` | High-level architecture diagrams |
 | `docs/Screenshots/Lakeflow_Jobs` | Lakeflow Jobs run graphs |
