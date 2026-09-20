@@ -1,0 +1,29 @@
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Silver: circuits
+
+# COMMAND ----------
+from pyspark import pipelines as dp
+
+catalog = spark.conf.get("f1.catalog")
+release_tag = spark.conf.get("f1.release_tag")
+release_seq = int(spark.conf.get("f1.release_seq"))
+min_season = int(spark.conf.get("f1.min_season"))
+bronze = f"{catalog}.f1pa_sdp_bronze"
+silver = f"{catalog}.f1pa_sdp_silver"
+gold = f"{catalog}.f1pa_sdp_gold"
+
+
+@dp.materialized_view(name=f"{silver}.circuits")
+@dp.expect_or_fail("required_fields", "circuit_id IS NOT NULL AND circuit_name IS NOT NULL")
+def silver_circuits():
+    return spark.sql(f"""
+SELECT
+    NULLIF(`id`, '') AS circuit_id,
+    NULLIF(`name`, '') AS circuit_name,
+    NULLIF(`countryId`, '') AS country_id,
+    NULLIF(`type`, '') AS circuit_type,
+    {release_seq} AS _release_seq
+FROM (SELECT * FROM {bronze}.circuits WHERE release_tag = '{release_tag}') source_rows
+
+""")

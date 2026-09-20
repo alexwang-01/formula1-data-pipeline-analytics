@@ -1,0 +1,239 @@
+resources:
+  jobs:
+    formula1_manual:
+      name: Formula 1 - Manual Data Pipeline
+      description: Original CSV snapshots, per-table Bronze/Silver processing, and four materialized Gold tables.
+      max_concurrent_runs: 1
+      timeout_seconds: 5400
+      queue:
+        enabled: false
+      performance_target: STANDARD
+      parameters:
+      - name: catalog
+        default: ${var.catalog}
+      - name: release_tag
+        default: ${var.release_tag}
+      - name: min_season
+        default: ${var.min_season}
+      - name: allow_scope_expansion
+        default: "false"
+      tags:
+        project: formula1-data-pipeline-analytics
+        implementation: manual
+      tasks:
+      - task_key: prepare_source
+        notebook_task:
+          notebook_path: ../notebooks/01-source/prepare_release.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 0
+        retry_on_timeout: false
+      - task_key: bronze_drivers
+        depends_on:
+        - task_key: prepare_source
+        notebook_task:
+          notebook_path: ../notebooks/02-bronze/drivers.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 1
+        min_retry_interval_millis: 10000
+        retry_on_timeout: false
+      - task_key: bronze_constructors
+        depends_on:
+        - task_key: prepare_source
+        notebook_task:
+          notebook_path: ../notebooks/02-bronze/constructors.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 1
+        min_retry_interval_millis: 10000
+        retry_on_timeout: false
+      - task_key: bronze_circuits
+        depends_on:
+        - task_key: prepare_source
+        notebook_task:
+          notebook_path: ../notebooks/02-bronze/circuits.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 1
+        min_retry_interval_millis: 10000
+        retry_on_timeout: false
+      - task_key: bronze_races
+        depends_on:
+        - task_key: prepare_source
+        notebook_task:
+          notebook_path: ../notebooks/02-bronze/races.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 1
+        min_retry_interval_millis: 10000
+        retry_on_timeout: false
+      - task_key: bronze_race_results
+        depends_on:
+        - task_key: prepare_source
+        notebook_task:
+          notebook_path: ../notebooks/02-bronze/race_results.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 1
+        min_retry_interval_millis: 10000
+        retry_on_timeout: false
+      - task_key: bronze_sprint_results
+        depends_on:
+        - task_key: prepare_source
+        notebook_task:
+          notebook_path: ../notebooks/02-bronze/sprint_results.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 1
+        min_retry_interval_millis: 10000
+        retry_on_timeout: false
+      - task_key: bronze_driver_standings
+        depends_on:
+        - task_key: prepare_source
+        notebook_task:
+          notebook_path: ../notebooks/02-bronze/driver_standings.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 1
+        min_retry_interval_millis: 10000
+        retry_on_timeout: false
+      - task_key: bronze_constructor_standings
+        depends_on:
+        - task_key: prepare_source
+        notebook_task:
+          notebook_path: ../notebooks/02-bronze/constructor_standings.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 1
+        min_retry_interval_millis: 10000
+        retry_on_timeout: false
+      - task_key: silver_drivers
+        depends_on:
+        - task_key: bronze_drivers
+        notebook_task:
+          notebook_path: ../notebooks/03-silver/drivers.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 0
+        retry_on_timeout: false
+      - task_key: silver_constructors
+        depends_on:
+        - task_key: bronze_constructors
+        notebook_task:
+          notebook_path: ../notebooks/03-silver/constructors.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 0
+        retry_on_timeout: false
+      - task_key: silver_circuits
+        depends_on:
+        - task_key: bronze_circuits
+        notebook_task:
+          notebook_path: ../notebooks/03-silver/circuits.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 0
+        retry_on_timeout: false
+      - task_key: silver_races
+        depends_on:
+        - task_key: bronze_races
+        - task_key: silver_circuits
+        notebook_task:
+          notebook_path: ../notebooks/03-silver/races.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 0
+        retry_on_timeout: false
+      - task_key: silver_race_results
+        depends_on:
+        - task_key: bronze_race_results
+        - task_key: silver_races
+        - task_key: silver_drivers
+        - task_key: silver_constructors
+        notebook_task:
+          notebook_path: ../notebooks/03-silver/race_results.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 0
+        retry_on_timeout: false
+      - task_key: silver_sprint_results
+        depends_on:
+        - task_key: bronze_sprint_results
+        - task_key: silver_races
+        - task_key: silver_drivers
+        - task_key: silver_constructors
+        notebook_task:
+          notebook_path: ../notebooks/03-silver/sprint_results.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 0
+        retry_on_timeout: false
+      - task_key: silver_driver_standings
+        depends_on:
+        - task_key: bronze_driver_standings
+        - task_key: silver_drivers
+        notebook_task:
+          notebook_path: ../notebooks/03-silver/driver_standings.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 0
+        retry_on_timeout: false
+      - task_key: silver_constructor_standings
+        depends_on:
+        - task_key: bronze_constructor_standings
+        - task_key: silver_constructors
+        notebook_task:
+          notebook_path: ../notebooks/03-silver/constructor_standings.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 0
+        retry_on_timeout: false
+      - task_key: silver_drivers_history
+        depends_on:
+        - task_key: silver_drivers
+        notebook_task:
+          notebook_path: ../notebooks/03-silver/drivers_history.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 0
+        retry_on_timeout: false
+      - task_key: gold_race_dimension
+        depends_on:
+        - task_key: silver_races
+        notebook_task:
+          notebook_path: ../notebooks/04-gold/race_dimension.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 0
+        retry_on_timeout: false
+      - task_key: gold_session_results
+        depends_on:
+        - task_key: silver_race_results
+        - task_key: silver_sprint_results
+        notebook_task:
+          notebook_path: ../notebooks/04-gold/session_results.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 0
+        retry_on_timeout: false
+      - task_key: gold_driver_season
+        depends_on:
+        - task_key: silver_driver_standings
+        - task_key: gold_session_results
+        notebook_task:
+          notebook_path: ../notebooks/04-gold/driver_season.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 0
+        retry_on_timeout: false
+      - task_key: gold_constructor_season
+        depends_on:
+        - task_key: silver_constructor_standings
+        - task_key: gold_session_results
+        notebook_task:
+          notebook_path: ../notebooks/04-gold/constructor_season.py
+        timeout_seconds: 900
+        disable_auto_optimization: true
+        max_retries: 0
+        retry_on_timeout: false

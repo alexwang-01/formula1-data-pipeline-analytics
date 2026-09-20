@@ -1,0 +1,103 @@
+resources:
+  pipelines:
+    formula1_sdp:
+      name: Formula 1 - SDP Data Pipeline
+      catalog: ${var.catalog}
+      schema: f1pa_sdp_bronze
+      serverless: true
+      continuous: false
+      development: false
+      channel: CURRENT
+      edition: ADVANCED
+      configuration:
+        f1.catalog: ${var.catalog}
+        f1.release_tag: ${var.release_tag}
+        f1.release_seq: ${var.release_seq}
+        f1.min_season: ${var.min_season}
+        spark.sql.ansi.enabled: "true"
+      libraries:
+        - notebook:
+            path: ../notebooks/bronze/circuits.py
+        - notebook:
+            path: ../notebooks/bronze/constructor_standings.py
+        - notebook:
+            path: ../notebooks/bronze/constructors.py
+        - notebook:
+            path: ../notebooks/bronze/driver_standings.py
+        - notebook:
+            path: ../notebooks/bronze/drivers.py
+        - notebook:
+            path: ../notebooks/bronze/race_results.py
+        - notebook:
+            path: ../notebooks/bronze/races.py
+        - notebook:
+            path: ../notebooks/bronze/sprint_results.py
+        - notebook:
+            path: ../notebooks/gold/constructor_season.py
+        - notebook:
+            path: ../notebooks/gold/driver_season.py
+        - notebook:
+            path: ../notebooks/gold/race_dimension.py
+        - notebook:
+            path: ../notebooks/gold/session_results.py
+        - notebook:
+            path: ../notebooks/silver/circuits.py
+        - notebook:
+            path: ../notebooks/silver/constructor_standings.py
+        - notebook:
+            path: ../notebooks/silver/constructors.py
+        - notebook:
+            path: ../notebooks/silver/driver_standings.py
+        - notebook:
+            path: ../notebooks/silver/drivers.py
+        - notebook:
+            path: ../notebooks/silver/drivers_history.py
+        - notebook:
+            path: ../notebooks/silver/race_results.py
+        - notebook:
+            path: ../notebooks/silver/races.py
+        - notebook:
+            path: ../notebooks/silver/sprint_results.py
+  jobs:
+    formula1_sdp_job:
+      name: Formula 1 - SDP Snapshot Run
+      max_concurrent_runs: 1
+      timeout_seconds: 5400
+      queue:
+        enabled: false
+      performance_target: STANDARD
+      tags:
+        project: formula1-data-pipeline-analytics
+        implementation: sdp
+      tasks:
+        - task_key: prepare_source
+          notebook_task:
+            notebook_path: ../notebooks/prepare_source.py
+            base_parameters:
+              catalog: ${var.catalog}
+              release_tag: ${var.release_tag}
+              release_seq: ${var.release_seq}
+              min_season: ${var.min_season}
+          timeout_seconds: 900
+          max_retries: 0
+          disable_auto_optimization: true
+        - task_key: refresh_sdp
+          depends_on:
+            - task_key: prepare_source
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.formula1_sdp.id}
+            full_refresh: false
+          timeout_seconds: 3600
+          max_retries: 1
+          min_retry_interval_millis: 10000
+        - task_key: complete_release
+          depends_on:
+            - task_key: refresh_sdp
+          notebook_task:
+            notebook_path: ../notebooks/complete_release.py
+            base_parameters:
+              catalog: ${var.catalog}
+              release_seq: ${var.release_seq}
+          timeout_seconds: 900
+          max_retries: 0
+          disable_auto_optimization: true

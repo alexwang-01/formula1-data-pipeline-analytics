@@ -1,180 +1,146 @@
-# Azure Databricks Incremental Lakehouse Pipeline & Analytics Dashboard
+# Formula 1 Data Pipeline & Analytics on Azure Databricks
 
-This project implements a batch-oriented incremental lakehouse pipeline on Azure Databricks. It processes motorsport race data through Bronze, Silver, and Gold layers, coordinates each batch with Lakeflow Jobs, publishes driver and constructor standings as SQL views, and presents the analytical model through an AI/BI dashboard.
+This project builds a production-style data pipeline and analytics solution on Azure Databricks using pinned releases from the open-source [F1DB](https://github.com/f1db/f1db) dataset. Three source snapshots are processed through Bronze, Silver, and Gold layers before the curated data is presented in a five-page AI/BI dashboard.
 
-The repository keeps one notebook per Lakeflow task, with shared write logic separated into reusable helper notebooks.
+The same transformation logic is implemented in two ways. The **Manual Pipeline** uses explicit notebooks, Auto Loader, Structured Streaming, Delta `MERGE`, and hand-built SCD Type 2 logic. The **Lakeflow Spark Declarative Pipeline (SDP)** expresses the equivalent datasets with streaming tables, materialized views, expectations, and `AUTO CDC FROM SNAPSHOT`.
 
 ## Architecture
 
-![Azure Databricks incremental lakehouse architecture](docs/diagrams/incremental-lakehouse-architecture-v2.png)
+![Formula 1 data pipeline architecture](docs/images/architecture-overview.png)
 
-The architecture separates data movement from orchestration, governance, storage, and serving. Lakeflow Jobs coordinates each batch, Unity Catalog governs the data assets, ADLS Gen2 stores the landing files and Delta tables, and Databricks SQL serves the analytical model to the AI/BI dashboard.
+The architecture keeps the two implementations isolated while giving them the same source snapshots and analytical target. Bronze retains all three pinned releases, the current Silver and Gold tables represent the latest configured snapshot, and a separate driver-history table preserves changes across releases. The AI/BI dashboard reads the verified Manual Gold outputs; the SDP implementation is validated against those outputs rather than powering a duplicate dashboard.
 
 ## Key Capabilities
 
-- Batch-oriented Bronze, Silver, and Gold processing controlled by a `p_batch_id` job parameter
-- Idempotent Bronze writes using Delta partition replacement and Silver/Gold upserts using Delta Lake `MERGE`
-- Lakeflow Jobs task dependencies, nested job execution, and control-table-based batch tracking
-- Unity Catalog governance over ADLS Gen2 landing files, Delta tables, and analytical views
-- A dimensional Gold model with reusable driver and constructor standings views
-- AI/BI dashboard pages for season-specific driver and constructor standings and historical performance comparisons
+- Three ordered F1DB snapshots with pinned release tags and archive checksums
+- Auto Loader ingestion with Structured Streaming, checkpoints, and `availableNow` processing
+- Eight append-only Bronze tables and eight current-state Silver tables
+- Delta `MERGE` for idempotent current-state processing and correction handling
+- Driver history using SCD Type 2 across ordered source snapshots
+- Four analysis-ready Gold tables at race, session, driver-season, and constructor-season grains
+- Two equivalent implementations: a 22-task Manual Job and a managed SDP data pipeline
+- A five-page AI/BI dashboard backed directly by four Manual Gold tables
+- Local tests plus cloud row-level parity checks between Manual and SDP outputs
 
 ## Pipeline Design
 
 ### Layer Overview
 
-| Stage | Purpose | Incremental behavior |
+| Stage | Purpose | Processing behavior |
 | --- | --- | --- |
-| Bronze | Ingest one folder of raw CSV and JSON files and add source metadata | Replace only the selected `batch_id` partition |
-| Silver | Validate, standardize, deduplicate, and organize entity data | Upsert the latest records with Delta `MERGE` |
-| Gold | Build race, constructor, and driver dimensions plus a unified session-results fact | Upsert dimensional and fact records with Delta `MERGE` |
-| Analytics | Produce season-specific standings and historical driver and constructor metrics | Query Gold tables through reusable SQL views and analyses |
-| Dashboard | Present championship standings and historical comparisons | Serve analytical results through Databricks SQL and AI/BI |
+| Source | Download three pinned public F1DB releases | Verify each archive and prepare its eight CSV datasets |
+| Bronze | Preserve imported source rows and ingestion metadata | Append each snapshot with its release version |
+| Silver | Standardize, type, deduplicate, and validate current entities | Select the active snapshot and upsert current records with Delta `MERGE` |
+| Silver history | Preserve changes to driver identity attributes | Apply SCD Type 2 across the ordered snapshots |
+| Gold | Join related Silver entities and build analytical datasets | Produce four tables with explicit analytical grains |
+| Dashboard | Present championship, career, and race-result analysis | Query Manual Gold through seven saved SQL datasets |
 
-### Incremental Batch Workflow
+### Two Implementations
 
-```mermaid
-flowchart LR
-    A["Orchestration job run"] --> B["Identify next<br/>unprocessed batch"]
-    B --> C{"Batch available?"}
-    C -- "No" --> D["End"]
-    C -- "Yes" --> E["Create control record<br/>status: in_progress"]
-    E --> F["Run incremental refresh<br/>with p_batch_id"]
-    F --> G["Bronze tasks<br/>replace batch partition"]
-    G --> H["Silver tasks<br/>Delta MERGE"]
-    H --> I["Gold tasks<br/>Delta MERGE"]
-    I --> J["Complete batch<br/>status: completed"]
-```
+| Implementation | Databricks structure | Main techniques |
+| --- | --- | --- |
+| Manual Pipeline | One Lakeflow Job with 22 notebook tasks | Auto Loader, `writeStream`, checkpoints, Delta `MERGE`, explicit checks, and hand-built SCD2 |
+| Declarative Pipeline | One managed SDP pipeline with 21 dataset notebooks, launched by a three-task Job | Streaming tables, materialized views, expectations, and `AUTO CDC FROM SNAPSHOT` |
 
-The Bronze, Silver, and Gold sections contain parallel entity-level tasks where
-their Lakeflow dependencies allow it. Each orchestration run processes at most
-one batch folder. Later runs skip batches already marked as `in_progress` or
-`completed` when selecting the next available folder.
+Both implementations use separate Unity Catalog schemas, volumes, checkpoints, and deployment roots. This avoids cross-writing while allowing their eight current Silver and four Gold tables to be compared in both directions.
 
 ### Gold Analytical Model
 
-```mermaid
-erDiagram
-    DIM_RACES ||--o{ FACT_SESSION_RESULTS : "season + round"
-    DIM_CONSTRUCTORS ||--o{ FACT_SESSION_RESULTS : "constructor_id"
-    DIM_DRIVERS ||--o{ FACT_SESSION_RESULTS : "driver_id"
+| Gold table | Grain | Built from | Purpose |
+| --- | --- | --- | --- |
+| `race_dimension` | Race | Races + circuits | Season, round, date, race, and circuit context |
+| `session_results` | Race/session/driver/car | Race and Sprint results + races + drivers + constructors | Classifications, points, wins, podiums, and participant identities |
+| `driver_season` | Season/driver | Driver standings + drivers + session results | Championship standing and calculated season performance |
+| `constructor_season` | Season/constructor/engine | Constructor standings + constructors + session results | Engine-aware team standing and season performance |
 
-    DIM_RACES {
-        int season PK
-        int round PK
-        string race_name
-        date race_date
-        string circuit_name
-        string locality
-        string country
-    }
+The Gold layer contains the reusable analytical outputs. It does not add copied dimensions, separate reporting tables, or validation-only publication stages.
 
-    DIM_CONSTRUCTORS {
-        int constructor_id PK
-        string constructor_name
-        string nationality
-        string nationality_region
-    }
+## Manual Lakeflow Job
 
-    DIM_DRIVERS {
-        int driver_id PK
-        string driver_name
-        date date_of_birth
-        string nationality
-        string nationality_region
-    }
+The Manual Pipeline keeps one notebook per visible task so the Databricks Job graph shows where each source table is ingested, transformed, and joined. Dependencies represent real execution or data-quality requirements rather than layout-only connections.
 
-    FACT_SESSION_RESULTS {
-        int season PK, FK
-        int round PK, FK
-        string session_type PK
-        int constructor_id PK, FK
-        int driver_id PK, FK
-        int grid_position
-        int completed_laps
-        int points
-        int final_position
-        boolean is_win
-        boolean is_podium
-    }
-```
+![Manual Lakeflow Job graph](docs/images/manual-job-graph.png)
 
-The Gold layer uses a dimensional model with one session-results fact and three
-dimensions. Driver and constructor standings views aggregate this model for the
-dashboard. The PK and FK labels show logical relationships between tables; the
-notebooks do not create enforced key constraints.
+The 22 tasks cover source preparation, eight Bronze tables, eight current Silver tables, driver history, and four Gold outputs. Each run is on demand and processes the configured release without continuous compute.
 
-## Lakeflow Job Execution
+## Lakeflow Spark Declarative Pipeline
 
-The orchestration job identifies an unprocessed batch, creates its control record, invokes the incremental refresh job, and marks the batch as completed after all dependent tasks succeed.
+The SDP version models the same datasets declaratively. Databricks owns dataset dependency ordering and incremental state inside the pipeline, while a small surrounding Job prepares the pinned source, starts the pipeline, and records the completed release.
 
-### Incremental Refresh Job
+![Lakeflow Spark Declarative Pipeline graph](docs/images/sdp-pipeline-graph.png)
 
-![Incremental refresh Lakeflow Job](docs/Screenshots/Lakeflow_Jobs/incremental_refresh_success.png)
-
-### Batch Orchestration Job
-
-![Batch orchestration Lakeflow Job](docs/Screenshots/Lakeflow_Jobs/batch_orchestration_success.png)
+Its lineage contains eight Bronze streaming tables, eight current Silver materialized views, one driver-history table, and four Gold materialized views. It intentionally does not connect to a second dashboard because its current Silver and Gold rows have already been validated against the Manual implementation.
 
 ## AI/BI Dashboard
 
-The dashboard is organized into four analytical pages:
+The dashboard is organized into five focused pages. Seven saved SQL datasets query the four Manual Gold tables directly, so no additional reporting tables or Dashboard-specific Job tasks are required.
 
 | Page | Focus |
 | --- | --- |
-| Driver Championship Standings | Driver rank, points, wins, and podiums for a selected season |
-| Constructor Championship Standings | Constructor rank, points, wins, and podiums for a selected season |
-| Dominant Drivers of All Time | Career totals across available seasons for championship-winning drivers |
-| Dominant Teams of All Time | Historical totals across available seasons for championship-winning constructors |
+| Driver Championship | Season rank, points, wins, podiums, and trend for each driver |
+| Constructor Championship | Season rank, points, wins, podiums, and trend for each constructor |
+| Driver Career | Career titles, wins, podiums, entries, and season history |
+| Constructor Career | Historical team titles, wins, podiums, entries, and season history |
+| Race Results | Race and Sprint classifications with race and circuit context |
 
-The two historical pages use a project-defined `greatness_score` to compare championship-winning drivers and constructors:
+Career comparisons use direct, explainable measures rather than a project-defined composite score.
 
-`championships * 100 + wins * 10 + podiums * 3`
+### Driver Championship
 
-This score is an analytical feature of the project rather than an official championship ranking.
+![Driver Championship dashboard](docs/images/dashboard-01-driver-championship.png)
 
-### Driver Championship Standings
+### Constructor Championship
 
-![Driver championship standings dashboard](docs/Screenshots/Dashboard/driver_championship_standings.png)
+![Constructor Championship dashboard](docs/images/dashboard-02-constructor-championship.png)
 
-### Constructor Championship Standings
+### Driver Career
 
-![Constructor championship standings dashboard](docs/Screenshots/Dashboard/constructor_championship_standings.png)
+![Driver Career dashboard](docs/images/dashboard-03-driver-career.png)
 
-### Dominant Drivers of All Time
+### Constructor Career
 
-![Dominant drivers of all time dashboard](docs/Screenshots/Dashboard/dominant_drivers_all_time.png)
+![Constructor Career dashboard](docs/images/dashboard-04-constructor-career.png)
 
-### Dominant Teams of All Time
+### Race Results
 
-![Dominant teams of all time dashboard](docs/Screenshots/Dashboard/dominant_teams_all_time.png)
+![Race Results dashboard](docs/images/dashboard-05-race-results.png)
+
+## Verification
+
+- The Manual Pipeline completed all 22 tasks for the active `v2026.14.0` snapshot.
+- SDP processed all three snapshots and repeated the latest snapshot without creating duplicate current rows.
+- Eight current Silver tables and four Gold tables matched the Manual outputs in both directions.
+- Driver history contains 1,147 versions representing 917 current drivers across the three releases.
+- Gold outputs contain 1,172 races, 28,189 session results, 1,681 driver seasons, and 720 constructor-engine seasons.
+- The repository has 47 passing local tests covering source configuration, transformations, history, SDP definitions, and Dashboard assets.
+
+The checks establish functional equivalence and repeatability; they are not performance or cost benchmarks. Exact evidence and boundaries are recorded in [validation](docs/validation.md) and [SDP validation](sdp/validation.md).
 
 ## Repository Layout
 
 | Path | Purpose |
 | --- | --- |
-| `notebooks/00-common` | Shared configuration and Bronze, Silver, and Gold write helpers |
-| `notebooks/01-setup` | Unity Catalog, schemas, external location, and volume setup |
-| `notebooks/02-bronze` | Six raw-file ingestion tasks |
-| `notebooks/03-silver` | Six cleansing and entity upsert tasks |
-| `notebooks/04-gold` | Dimensions, nationality reference, and session-results fact |
-| `notebooks/05-analytics` | Season-specific standings views and historical driver and constructor analyses |
-| `notebooks/06-orchestration` | Batch control table and orchestration tasks |
-| `docs/diagrams` | High-level architecture diagrams |
-| `docs/Screenshots/Lakeflow_Jobs` | Lakeflow Jobs run graphs |
-| `docs/Screenshots/Dashboard` | AI/BI dashboard screenshots |
-| `docs/project-guide.md` | Detailed execution order, runtime objects, and Lakeflow task mapping |
-| `data/data-usage-guide.md` | Landing data layout and how batches are used by the pipeline |
+| `notebooks/` | Manual Pipeline notebooks, organized by Source, Bronze, Silver, and Gold |
+| `sdp/` | Declarative dataset notebooks, pipeline configuration, and SDP validation notes |
+| `dashboards/` | AI/BI dashboard definition and saved SQL datasets |
+| `resources/` | Databricks Asset Bundle resources for the Manual Job and dashboard |
+| `tests/` | Local tests for configuration, transformations, and deployable assets |
+| `tools/` | Local validation utilities |
+| `analysis/` | Offline exploration used to select the final analytical scope |
+| `docs/` | Data scope, task map, storage map, runbook, validation, and screenshots |
+| `databricks.yml` | Root Databricks Asset Bundle configuration |
 
 ## Running the Project
 
-1. Connect this repository to a Databricks Git folder.
-2. Confirm the storage account, container, and storage credential in `notebooks/01-setup/01.Setup Project Environment.sql`.
-3. Run the setup notebook and `notebooks/06-orchestration/00.Create Control Tables.py` once.
-4. Upload the batch folders described in `data/data-usage-guide.md` to the landing volume.
-5. Configure the incremental refresh Lakeflow Job with the notebook tasks and dependencies listed in `docs/project-guide.md`.
-6. Configure the orchestration Lakeflow Job and schedule it as required.
-7. Run the analytics notebooks after the Gold tables are available.
-8. Build the AI/BI dashboard from the standings views and Gold tables described in `docs/project-guide.md`.
+1. Install the Databricks CLI and authenticate to an Azure Databricks workspace.
+2. Set the required catalog and SQL warehouse values described in the [runbook](docs/runbook.md).
+3. Run `python tools/validate_local.py` to validate source configuration and deployable assets.
+4. Deploy and run the Manual Pipeline first; it produces the Gold tables used by the dashboard.
+5. Deploy the SDP bundle separately and run the snapshot Job to reproduce the same Silver and Gold results declaratively.
+6. Use the validation notebooks and documented checks to compare both implementations.
 
-These source-format notebooks are designed to execute in Azure Databricks. GitHub displays and versions the code, documentation, and screenshots, but it does not execute the Databricks pipeline.
+Workspace-specific resource IDs, credentials, downloaded archives, generated deployment state, and local run evidence are intentionally excluded from Git. The Databricks resources are configured through environment values rather than repository-specific workspace identifiers.
+
+## Source and Scope
+
+F1DB data is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). This project pins `v2026.8.1`, `v2026.8.2`, and `v2026.14.0`; the active release covers 1950 through the partially completed 2026 season. It demonstrates reproducible batch and available-now processing of versioned public releases, not a live Formula 1 timing feed.

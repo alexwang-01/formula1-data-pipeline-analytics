@@ -1,0 +1,3284 @@
+{
+  "datasets": [
+    {
+      "displayName": "Driver season standings",
+      "name": "drivers",
+      "queryLines": [
+        "SELECT season, driver_id, driver_name, nationality_country_id,\n",
+        "       COALESCE(CAST(source_position AS STRING), standing_status) AS position_label,\n",
+        "       source_position, COALESCE(source_position, 9999) AS standing_order, standing_status, source_points,\n",
+        "       calculated_points, points_difference,\n",
+        "       race_points, sprint_points, race_entries, race_wins, race_podiums\n",
+        "FROM f1pa_gold.driver_season\n",
+        "ORDER BY season DESC, source_position NULLS LAST, driver_name\n"
+      ],
+      "schema": "f1pa_gold"
+    },
+    {
+      "displayName": "Constructor season standings",
+      "name": "constructors",
+      "queryLines": [
+        "SELECT season, constructor_id, constructor_name, country_id, engine_manufacturer_id,\n",
+        "       COALESCE(CAST(source_position AS STRING), standing_status) AS position_label,\n",
+        "       CASE WHEN COUNT(*) OVER (PARTITION BY season, constructor_id) > 1\n",
+        "            THEN CONCAT(constructor_name, ' / ', UPPER(engine_manufacturer_id))\n",
+        "            ELSE constructor_name END AS team_entry,\n",
+        "       source_position, COALESCE(source_position, 9999) AS standing_order, standing_status, source_points,\n",
+        "       calculated_points, points_difference,\n",
+        "       race_weekends, race_car_entries, race_wins, race_podiums\n",
+        "FROM f1pa_gold.constructor_season\n",
+        "ORDER BY season DESC, source_position NULLS LAST, constructor_name\n"
+      ],
+      "schema": "f1pa_gold"
+    },
+    {
+      "displayName": "Race and sprint results",
+      "name": "results",
+      "queryLines": [
+        "-- Race-results dashboard dataset; this SELECT creates no persistent view.\n",
+        "-- Wait for the entire Job to succeed before reading multiple Gold tables.\n",
+        "SELECT f._release_seq, f.season, f.round, f.race_id,\n",
+        "       CONCAT(LPAD(CAST(f.round AS STRING), 2, '0'), ' - ',\n",
+        "              UPPER(REPLACE(r.grand_prix_id, '-', ' '))) AS grand_prix,\n",
+        "       r.race_name, r.race_date, r.circuit_id, r.circuit_name, r.country_id,\n",
+        "       f.session_type, f.driver_id, f.driver_name,\n",
+        "       f.constructor_id, f.constructor_name, f.car_number,\n",
+        "       f.grid_position, f.grid_status, f.finish_position, f.finish_status,\n",
+        "       COALESCE(f.finish_position, 9999) AS classification_order,\n",
+        "       CASE WHEN f.finish_position IS NOT NULL THEN 'Classified'\n",
+        "            ELSE f.finish_status END AS result_status,\n",
+        "       f.points, f.completed_laps, f.retirement_reason, f.positions_gained,\n",
+        "       f.is_race_win, f.is_race_podium, f.has_points\n",
+        "FROM f1pa_gold.session_results f\n",
+        "LEFT JOIN f1pa_gold.race_dimension r\n",
+        "  ON f._release_seq = r._release_seq AND f.race_id = r.race_id\n"
+      ],
+      "schema": "f1pa_gold"
+    },
+    {
+      "displayName": "Driver race winners",
+      "name": "drivers_wins",
+      "queryLines": [
+        "SELECT season, driver_name, COUNT(DISTINCT race_id) AS race_wins\n",
+        "FROM f1pa_gold.session_results WHERE is_race_win\n",
+        "GROUP BY season, driver_id, driver_name\n"
+      ],
+      "schema": "f1pa_gold"
+    },
+    {
+      "displayName": "Constructor race winners",
+      "name": "constructors_wins",
+      "queryLines": [
+        "SELECT season, constructor_name, COUNT(DISTINCT race_id) AS race_wins\n",
+        "FROM f1pa_gold.session_results WHERE is_race_win AND season >= 1958\n",
+        "GROUP BY season, constructor_id, constructor_name\n"
+      ],
+      "schema": "f1pa_gold"
+    },
+    {
+      "displayName": "Driver career records",
+      "name": "driver_career",
+      "queryLines": [
+        "-- Use race facts, not annual standings, which omit some historical participants.\n",
+        "WITH results AS (\n",
+        "    SELECT driver_id, MAX(driver_name) AS driver_name,\n",
+        "           MIN(season) AS first_season, MAX(season) AS last_season,\n",
+        "           COUNT(DISTINCT race_id) AS race_entries,\n",
+        "           COUNT(DISTINCT CASE WHEN is_race_win THEN race_id END) AS race_wins,\n",
+        "           COUNT(DISTINCT CASE WHEN is_race_podium THEN race_id END) AS race_podiums\n",
+        "    FROM f1pa_gold.session_results\n",
+        "    WHERE session_type = 'RACE'\n",
+        "    GROUP BY driver_id\n",
+        "), titles AS (\n",
+        "    SELECT driver_id, SUM(CASE WHEN championship_won THEN 1 ELSE 0 END) AS championships\n",
+        "    FROM f1pa_gold.driver_season\n",
+        "    GROUP BY driver_id\n",
+        "), career AS (\n",
+        "    SELECT r.*, COALESCE(t.championships, 0) AS championships\n",
+        "    FROM results r LEFT JOIN titles t ON r.driver_id = t.driver_id\n",
+        ")\n",
+        "SELECT *,\n",
+        "       ROW_NUMBER() OVER (ORDER BY championships DESC, race_wins DESC, driver_id) AS titles_rank,\n",
+        "       ROW_NUMBER() OVER (ORDER BY race_wins DESC, race_podiums DESC, driver_id) AS wins_rank,\n",
+        "       ROW_NUMBER() OVER (ORDER BY race_podiums DESC, race_wins DESC, driver_id) AS podiums_rank\n",
+        "FROM career\n",
+        "ORDER BY championships DESC, race_wins DESC, driver_name\n"
+      ],
+      "schema": "f1pa_gold"
+    },
+    {
+      "displayName": "Constructor career records",
+      "name": "constructor_career",
+      "queryLines": [
+        "-- A shared car counts once for the constructor, even with multiple drivers.\n",
+        "WITH cars AS (\n",
+        "    SELECT constructor_id, race_id, car_number, MAX(constructor_name) AS constructor_name,\n",
+        "           MIN(season) AS season,\n",
+        "           MAX(CASE WHEN is_race_win THEN 1 ELSE 0 END) AS race_win,\n",
+        "           MAX(CASE WHEN is_race_podium THEN 1 ELSE 0 END) AS race_podium\n",
+        "    FROM f1pa_gold.session_results\n",
+        "    WHERE session_type = 'RACE'\n",
+        "    GROUP BY constructor_id, race_id, car_number\n",
+        "), results AS (\n",
+        "    SELECT constructor_id, MAX(constructor_name) AS constructor_name,\n",
+        "           MIN(season) AS first_season, MAX(season) AS last_season,\n",
+        "           COUNT(DISTINCT race_id) AS race_weekends,\n",
+        "           SUM(race_win) AS race_wins, SUM(race_podium) AS race_podiums\n",
+        "    FROM cars GROUP BY constructor_id\n",
+        "), titles AS (\n",
+        "    SELECT constructor_id, SUM(CASE WHEN championship_won THEN 1 ELSE 0 END) AS championships\n",
+        "    FROM f1pa_gold.constructor_season GROUP BY constructor_id\n",
+        "), career AS (\n",
+        "    SELECT r.*, COALESCE(t.championships, 0) AS championships\n",
+        "    FROM results r LEFT JOIN titles t ON r.constructor_id = t.constructor_id\n",
+        ")\n",
+        "SELECT *,\n",
+        "       ROW_NUMBER() OVER (ORDER BY championships DESC, race_wins DESC, constructor_id) AS titles_rank,\n",
+        "       ROW_NUMBER() OVER (ORDER BY race_wins DESC, race_podiums DESC, constructor_id) AS wins_rank,\n",
+        "       ROW_NUMBER() OVER (ORDER BY race_podiums DESC, race_wins DESC, constructor_id) AS podiums_rank\n",
+        "FROM career\n",
+        "ORDER BY championships DESC, race_wins DESC, constructor_name\n"
+      ],
+      "schema": "f1pa_gold"
+    }
+  ],
+  "pages": [
+    {
+      "displayName": "Driver Championship",
+      "layout": [
+        {
+          "position": {
+            "height": 1,
+            "width": 4,
+            "x": 0,
+            "y": 0
+          },
+          "widget": {
+            "name": "drivers_season_filter",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "drivers",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`season`",
+                      "name": "season"
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "winners",
+                "query": {
+                  "datasetName": "drivers_wins",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`season`",
+                      "name": "season"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "season",
+                    "queryName": "main"
+                  },
+                  {
+                    "fieldName": "season",
+                    "queryName": "winners"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Season"
+              },
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "INTEGER",
+                    "values": [
+                      {
+                        "value": "2025"
+                      }
+                    ]
+                  }
+                }
+              },
+              "version": 2,
+              "widgetType": "filter-single-select"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 7,
+            "width": 7,
+            "x": 0,
+            "y": 1
+          },
+          "widget": {
+            "name": "drivers_standings",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "drivers",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`source_position`",
+                      "name": "source_position"
+                    },
+                    {
+                      "expression": "`driver_name`",
+                      "name": "driver_name"
+                    },
+                    {
+                      "expression": "`source_points`",
+                      "name": "source_points"
+                    },
+                    {
+                      "expression": "`race_wins`",
+                      "name": "race_wins"
+                    },
+                    {
+                      "expression": "`race_podiums`",
+                      "name": "race_podiums"
+                    },
+                    {
+                      "expression": "`season`",
+                      "name": "season"
+                    },
+                    {
+                      "expression": "`standing_order`",
+                      "name": "standing_order"
+                    },
+                    {
+                      "expression": "`position_label`",
+                      "name": "position_label"
+                    }
+                  ],
+                  "orders": [
+                    {
+                      "direction": "ASC",
+                      "expression": "`season`"
+                    },
+                    {
+                      "direction": "ASC",
+                      "expression": "`standing_order`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main"
+              },
+              "encodings": {
+                "columns": [
+                  {
+                    "displayName": "Position",
+                    "fieldName": "position_label"
+                  },
+                  {
+                    "displayName": "Driver",
+                    "fieldName": "driver_name"
+                  },
+                  {
+                    "displayName": "Points",
+                    "fieldName": "source_points",
+                    "format": {
+                      "abbreviation": "none",
+                      "decimalPlaces": {
+                        "type": "all"
+                      },
+                      "hideGroupSeparator": true,
+                      "type": "number-plain"
+                    }
+                  },
+                  {
+                    "displayName": "Race wins",
+                    "fieldName": "race_wins"
+                  },
+                  {
+                    "displayName": "Race podiums",
+                    "fieldName": "race_podiums"
+                  },
+                  {
+                    "displayName": "Season",
+                    "fieldName": "season"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Driver standings"
+              },
+              "version": 2,
+              "widgetType": "table"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 8,
+            "width": 5,
+            "x": 7,
+            "y": 0
+          },
+          "widget": {
+            "name": "drivers_wins_donut",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "drivers_wins",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "SUM(`race_wins`)",
+                      "name": "sum(race_wins)"
+                    },
+                    {
+                      "expression": "`driver_name`",
+                      "name": "driver_name"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "angle": {
+                  "displayName": "Race wins",
+                  "fieldName": "sum(race_wins)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "driver_name",
+                  "legend": {
+                    "hide": false
+                  },
+                  "scale": {
+                    "mappings": [
+                      {
+                        "color": "#F5B342",
+                        "value": "Lando Norris"
+                      },
+                      {
+                        "color": "#548CE0",
+                        "value": "Max Verstappen"
+                      },
+                      {
+                        "color": "#EB7942",
+                        "value": "Oscar Piastri"
+                      },
+                      {
+                        "color": "#35C5B5",
+                        "value": "George Russell"
+                      },
+                      {
+                        "color": "#E95765",
+                        "value": "Charles Leclerc"
+                      },
+                      {
+                        "color": "#B85F86",
+                        "value": "Lewis Hamilton"
+                      },
+                      {
+                        "color": "#7CD8C5",
+                        "value": "Kimi Antonelli"
+                      },
+                      {
+                        "color": "#56ADD9",
+                        "value": "Alexander Albon"
+                      },
+                      {
+                        "color": "#8198ED",
+                        "value": "Carlos Sainz Jr."
+                      },
+                      {
+                        "color": "#35A076",
+                        "value": "Fernando Alonso"
+                      },
+                      {
+                        "color": "#9AC748",
+                        "value": "Nico Hülkenberg"
+                      },
+                      {
+                        "color": "#A293E0",
+                        "value": "Isack Hadjar"
+                      },
+                      {
+                        "color": "#B7BCC7",
+                        "value": "Oliver Bearman"
+                      },
+                      {
+                        "color": "#887AC4",
+                        "value": "Liam Lawson"
+                      },
+                      {
+                        "color": "#D3A8AC",
+                        "value": "Esteban Ocon"
+                      },
+                      {
+                        "color": "#7BAA7A",
+                        "value": "Lance Stroll"
+                      },
+                      {
+                        "color": "#849AC2",
+                        "value": "Yuki Tsunoda"
+                      },
+                      {
+                        "color": "#E98BC0",
+                        "value": "Pierre Gasly"
+                      },
+                      {
+                        "color": "#BDD980",
+                        "value": "Gabriel Bortoleto"
+                      },
+                      {
+                        "color": "#D5A1C6",
+                        "value": "Franco Colapinto"
+                      },
+                      {
+                        "color": "#BD96C2",
+                        "value": "Jack Doohan"
+                      },
+                      {
+                        "color": "#A07DD0",
+                        "value": "Sebastian Vettel"
+                      },
+                      {
+                        "color": "#DA975C",
+                        "value": "Daniel Ricciardo"
+                      },
+                      {
+                        "color": "#63A9C1",
+                        "value": "Valtteri Bottas"
+                      },
+                      {
+                        "color": "#82A568",
+                        "value": "Sergio Pérez"
+                      },
+                      {
+                        "color": "#CB9275",
+                        "value": "Jenson Button"
+                      },
+                      {
+                        "color": "#57B79B",
+                        "value": "Nico Rosberg"
+                      },
+                      {
+                        "color": "#7281C2",
+                        "value": "Mark Webber"
+                      },
+                      {
+                        "color": "#C66F74",
+                        "value": "Kimi Räikkönen"
+                      }
+                    ],
+                    "type": "categorical"
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              },
+              "frame": {
+                "showTitle": false,
+                "title": {
+                  "fields": [],
+                  "value": "Race wins by driver"
+                }
+              },
+              "version": 3,
+              "widgetType": "pie"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 7,
+            "width": 12,
+            "x": 0,
+            "y": 8
+          },
+          "widget": {
+            "name": "drivers_points",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "drivers",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "SUM(`source_points`)",
+                      "name": "sum(source_points)"
+                    },
+                    {
+                      "expression": "`driver_name`",
+                      "name": "driver_name"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "color": {
+                  "displayName": "Points",
+                  "fieldName": "sum(source_points)",
+                  "scale": {
+                    "colorRamp": {
+                      "mode": "scheme",
+                      "scheme": "plasma"
+                    },
+                    "type": "quantitative"
+                  }
+                },
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "fieldName": "sum(source_points)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "fieldName": "driver_name",
+                  "scale": {
+                    "sort": {
+                      "by": "x-reversed"
+                    },
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showDescription": false,
+                "showTitle": true,
+                "title": {
+                  "fields": [],
+                  "value": "Championship points by driver"
+                }
+              },
+              "mark": {
+                "colors": [
+                  {
+                    "position": 2,
+                    "themeColorType": "visualizationColors"
+                  }
+                ]
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 1,
+            "width": 12,
+            "x": 0,
+            "y": 15
+          },
+          "widget": {
+            "multilineTextboxSpec": {
+              "lines": [
+                "Source: F1DB v2026.14.0 | 1950-2026; 2026 is partial. Points follow source standings; wins and podiums are Grand Prix only."
+              ]
+            },
+            "name": "drivers_scope"
+          }
+        }
+      ],
+      "layoutVersion": "GRID_V1",
+      "name": "driver_standings",
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "displayName": "Constructor Championship",
+      "layout": [
+        {
+          "position": {
+            "height": 1,
+            "width": 4,
+            "x": 0,
+            "y": 0
+          },
+          "widget": {
+            "name": "constructors_season_filter",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "constructors",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`season`",
+                      "name": "season"
+                    }
+                  ]
+                }
+              },
+              {
+                "name": "winners",
+                "query": {
+                  "datasetName": "constructors_wins",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`season`",
+                      "name": "season"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "season",
+                    "queryName": "main"
+                  },
+                  {
+                    "fieldName": "season",
+                    "queryName": "winners"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Season"
+              },
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "INTEGER",
+                    "values": [
+                      {
+                        "value": "2025"
+                      }
+                    ]
+                  }
+                }
+              },
+              "version": 2,
+              "widgetType": "filter-single-select"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 7,
+            "width": 7,
+            "x": 0,
+            "y": 1
+          },
+          "widget": {
+            "name": "constructors_standings",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "constructors",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`source_position`",
+                      "name": "source_position"
+                    },
+                    {
+                      "expression": "`team_entry`",
+                      "name": "team_entry"
+                    },
+                    {
+                      "expression": "`source_points`",
+                      "name": "source_points"
+                    },
+                    {
+                      "expression": "`race_wins`",
+                      "name": "race_wins"
+                    },
+                    {
+                      "expression": "`race_podiums`",
+                      "name": "race_podiums"
+                    },
+                    {
+                      "expression": "`season`",
+                      "name": "season"
+                    },
+                    {
+                      "expression": "`standing_order`",
+                      "name": "standing_order"
+                    },
+                    {
+                      "expression": "`position_label`",
+                      "name": "position_label"
+                    }
+                  ],
+                  "orders": [
+                    {
+                      "direction": "ASC",
+                      "expression": "`season`"
+                    },
+                    {
+                      "direction": "ASC",
+                      "expression": "`standing_order`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main"
+              },
+              "encodings": {
+                "columns": [
+                  {
+                    "displayName": "Position",
+                    "fieldName": "position_label"
+                  },
+                  {
+                    "displayName": "Team",
+                    "fieldName": "team_entry"
+                  },
+                  {
+                    "displayName": "Points",
+                    "fieldName": "source_points",
+                    "format": {
+                      "abbreviation": "none",
+                      "decimalPlaces": {
+                        "type": "all"
+                      },
+                      "hideGroupSeparator": true,
+                      "type": "number-plain"
+                    }
+                  },
+                  {
+                    "displayName": "Race wins",
+                    "fieldName": "race_wins"
+                  },
+                  {
+                    "displayName": "Race podiums",
+                    "fieldName": "race_podiums"
+                  },
+                  {
+                    "displayName": "Season",
+                    "fieldName": "season"
+                  }
+                ]
+              },
+              "frame": {
+                "description": "1958-2026; 2026 is partial. Points follow source championship standings.",
+                "showDescription": true,
+                "showTitle": true,
+                "title": "Team standings"
+              },
+              "version": 2,
+              "widgetType": "table"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 8,
+            "width": 5,
+            "x": 7,
+            "y": 0
+          },
+          "widget": {
+            "name": "constructors_wins_donut",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "constructors_wins",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`constructor_name`",
+                      "name": "constructor_name"
+                    },
+                    {
+                      "expression": "SUM(`race_wins`)",
+                      "name": "wins"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main"
+              },
+              "encodings": {
+                "angle": {
+                  "displayName": "Race wins",
+                  "fieldName": "wins",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "constructor_name",
+                  "legend": {
+                    "hide": false
+                  },
+                  "scale": {
+                    "mappings": [
+                      {
+                        "color": "#F59E0B",
+                        "value": "McLaren"
+                      },
+                      {
+                        "color": "#E5484D",
+                        "value": "Ferrari"
+                      },
+                      {
+                        "color": "#4C78D8",
+                        "value": "Red Bull"
+                      },
+                      {
+                        "color": "#2EC4B6",
+                        "value": "Mercedes"
+                      },
+                      {
+                        "color": "#45A3F5",
+                        "value": "Williams"
+                      },
+                      {
+                        "color": "#289D80",
+                        "value": "Aston Martin"
+                      },
+                      {
+                        "color": "#EA78BA",
+                        "value": "Alpine"
+                      },
+                      {
+                        "color": "#B5B8C2",
+                        "value": "Haas"
+                      },
+                      {
+                        "color": "#74BD45",
+                        "value": "Kick Sauber"
+                      },
+                      {
+                        "color": "#74BD45",
+                        "value": "Sauber"
+                      },
+                      {
+                        "color": "#8F8CE7",
+                        "value": "RB"
+                      },
+                      {
+                        "color": "#8F8CE7",
+                        "value": "Racing Bulls"
+                      },
+                      {
+                        "color": "#7A9BBF",
+                        "value": "AlphaTauri"
+                      },
+                      {
+                        "color": "#7A9BBF",
+                        "value": "Toro Rosso"
+                      },
+                      {
+                        "color": "#E7C93C",
+                        "value": "Renault"
+                      },
+                      {
+                        "color": "#E799C1",
+                        "value": "Racing Point"
+                      },
+                      {
+                        "color": "#D787BA",
+                        "value": "Force India"
+                      },
+                      {
+                        "color": "#C55C70",
+                        "value": "Alfa Romeo"
+                      },
+                      {
+                        "color": "#BEA46D",
+                        "value": "Lotus"
+                      },
+                      {
+                        "color": "#4D9E66",
+                        "value": "Lotus Racing"
+                      },
+                      {
+                        "color": "#4D9E66",
+                        "value": "Caterham"
+                      },
+                      {
+                        "color": "#CB6F55",
+                        "value": "Marussia"
+                      },
+                      {
+                        "color": "#CB6F55",
+                        "value": "Virgin"
+                      },
+                      {
+                        "color": "#F08266",
+                        "value": "Manor"
+                      },
+                      {
+                        "color": "#C7AC7D",
+                        "value": "HRT"
+                      },
+                      {
+                        "color": "#D95762",
+                        "value": "Audi"
+                      },
+                      {
+                        "color": "#9BA7B4",
+                        "value": "Cadillac"
+                      }
+                    ],
+                    "type": "categorical"
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Race wins by team"
+              },
+              "version": 3,
+              "widgetType": "pie"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 5,
+            "width": 12,
+            "x": 0,
+            "y": 8
+          },
+          "widget": {
+            "name": "constructors_points",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "constructors",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "SUM(`source_points`)",
+                      "name": "sum(source_points)"
+                    },
+                    {
+                      "expression": "`team_entry`",
+                      "name": "team_entry"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main_query"
+              },
+              "encodings": {
+                "color": {
+                  "displayName": "Points",
+                  "fieldName": "sum(source_points)",
+                  "scale": {
+                    "colorRamp": {
+                      "mode": "scheme",
+                      "scheme": "plasma"
+                    },
+                    "type": "quantitative"
+                  }
+                },
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "fieldName": "sum(source_points)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "fieldName": "team_entry",
+                  "scale": {
+                    "sort": {
+                      "by": "x-reversed"
+                    },
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "fields": [],
+                  "value": "Championship points by team"
+                }
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          }
+        }
+      ],
+      "layoutVersion": "GRID_V1",
+      "name": "constructor_standings",
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "displayName": "Driver Career",
+      "layout": [
+        {
+          "position": {
+            "height": 8,
+            "width": 7,
+            "x": 0,
+            "y": 0
+          },
+          "widget": {
+            "name": "driver_career_table",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "driver_career",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`driver_name`",
+                      "name": "driver_name"
+                    },
+                    {
+                      "expression": "`championships`",
+                      "name": "championships"
+                    },
+                    {
+                      "expression": "`race_wins`",
+                      "name": "race_wins"
+                    },
+                    {
+                      "expression": "`race_podiums`",
+                      "name": "race_podiums"
+                    },
+                    {
+                      "expression": "`race_entries`",
+                      "name": "race_entries"
+                    }
+                  ],
+                  "orders": [
+                    {
+                      "direction": "DESC",
+                      "expression": "`championships`"
+                    },
+                    {
+                      "direction": "DESC",
+                      "expression": "`race_wins`"
+                    },
+                    {
+                      "direction": "ASC",
+                      "expression": "`driver_name`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main"
+              },
+              "encodings": {
+                "columns": [
+                  {
+                    "displayName": "Driver",
+                    "fieldName": "driver_name"
+                  },
+                  {
+                    "displayName": "Titles",
+                    "fieldName": "championships"
+                  },
+                  {
+                    "displayName": "Wins",
+                    "fieldName": "race_wins"
+                  },
+                  {
+                    "displayName": "Podiums",
+                    "fieldName": "race_podiums"
+                  },
+                  {
+                    "displayName": "Race entries",
+                    "fieldName": "race_entries"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Career records"
+              },
+              "version": 2,
+              "widgetType": "table"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 8,
+            "width": 5,
+            "x": 7,
+            "y": 0
+          },
+          "widget": {
+            "name": "driver_career_championships",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "driver_career",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`driver_name`",
+                      "name": "driver_name"
+                    },
+                    {
+                      "expression": "SUM(`championships`)",
+                      "name": "value"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`titles_rank` <= 10 AND `championships` > 0"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main"
+              },
+              "encodings": {
+                "color": {
+                  "fieldName": "driver_name",
+                  "legend": {
+                    "hide": true
+                  },
+                  "scale": {
+                    "mappings": [
+                      {
+                        "color": "#F5B342",
+                        "value": "Lando Norris"
+                      },
+                      {
+                        "color": "#548CE0",
+                        "value": "Max Verstappen"
+                      },
+                      {
+                        "color": "#EB7942",
+                        "value": "Oscar Piastri"
+                      },
+                      {
+                        "color": "#35C5B5",
+                        "value": "George Russell"
+                      },
+                      {
+                        "color": "#E95765",
+                        "value": "Charles Leclerc"
+                      },
+                      {
+                        "color": "#B85F86",
+                        "value": "Lewis Hamilton"
+                      },
+                      {
+                        "color": "#7CD8C5",
+                        "value": "Kimi Antonelli"
+                      },
+                      {
+                        "color": "#56ADD9",
+                        "value": "Alexander Albon"
+                      },
+                      {
+                        "color": "#8198ED",
+                        "value": "Carlos Sainz Jr."
+                      },
+                      {
+                        "color": "#35A076",
+                        "value": "Fernando Alonso"
+                      },
+                      {
+                        "color": "#9AC748",
+                        "value": "Nico Hülkenberg"
+                      },
+                      {
+                        "color": "#A293E0",
+                        "value": "Isack Hadjar"
+                      },
+                      {
+                        "color": "#B7BCC7",
+                        "value": "Oliver Bearman"
+                      },
+                      {
+                        "color": "#887AC4",
+                        "value": "Liam Lawson"
+                      },
+                      {
+                        "color": "#D3A8AC",
+                        "value": "Esteban Ocon"
+                      },
+                      {
+                        "color": "#7BAA7A",
+                        "value": "Lance Stroll"
+                      },
+                      {
+                        "color": "#849AC2",
+                        "value": "Yuki Tsunoda"
+                      },
+                      {
+                        "color": "#E98BC0",
+                        "value": "Pierre Gasly"
+                      },
+                      {
+                        "color": "#BDD980",
+                        "value": "Gabriel Bortoleto"
+                      },
+                      {
+                        "color": "#D5A1C6",
+                        "value": "Franco Colapinto"
+                      },
+                      {
+                        "color": "#BD96C2",
+                        "value": "Jack Doohan"
+                      },
+                      {
+                        "color": "#A07DD0",
+                        "value": "Sebastian Vettel"
+                      },
+                      {
+                        "color": "#DA975C",
+                        "value": "Daniel Ricciardo"
+                      },
+                      {
+                        "color": "#63A9C1",
+                        "value": "Valtteri Bottas"
+                      },
+                      {
+                        "color": "#82A568",
+                        "value": "Sergio Pérez"
+                      },
+                      {
+                        "color": "#CB9275",
+                        "value": "Jenson Button"
+                      },
+                      {
+                        "color": "#57B79B",
+                        "value": "Nico Rosberg"
+                      },
+                      {
+                        "color": "#7281C2",
+                        "value": "Mark Webber"
+                      },
+                      {
+                        "color": "#C66F74",
+                        "value": "Kimi Räikkönen"
+                      },
+                      {
+                        "color": "#E5484D",
+                        "value": "Michael Schumacher"
+                      },
+                      {
+                        "color": "#E8B547",
+                        "value": "Juan Manuel Fangio"
+                      },
+                      {
+                        "color": "#64A7D9",
+                        "value": "Alain Prost"
+                      },
+                      {
+                        "color": "#47B98B",
+                        "value": "Ayrton Senna"
+                      },
+                      {
+                        "color": "#BD9168",
+                        "value": "Jack Brabham"
+                      },
+                      {
+                        "color": "#9B80C7",
+                        "value": "Jackie Stewart"
+                      },
+                      {
+                        "color": "#DB7C80",
+                        "value": "Niki Lauda"
+                      },
+                      {
+                        "color": "#829FC0",
+                        "value": "Nelson Piquet"
+                      },
+                      {
+                        "color": "#6FAF97",
+                        "value": "Jim Clark"
+                      },
+                      {
+                        "color": "#409A72",
+                        "value": "Lotus"
+                      },
+                      {
+                        "color": "#AD9563",
+                        "value": "Brabham"
+                      },
+                      {
+                        "color": "#A783C7",
+                        "value": "Cooper"
+                      },
+                      {
+                        "color": "#73A793",
+                        "value": "BRM"
+                      },
+                      {
+                        "color": "#75A1D1",
+                        "value": "Tyrrell"
+                      }
+                    ],
+                    "type": "categorical"
+                  }
+                },
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "displayName": "Championships",
+                  "fieldName": "value",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "fieldName": "driver_name",
+                  "scale": {
+                    "sort": {
+                      "by": "x-reversed"
+                    },
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Championships - Top 10"
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 8,
+            "width": 6,
+            "x": 0,
+            "y": 8
+          },
+          "widget": {
+            "name": "driver_career_race_wins",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "driver_career",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`driver_name`",
+                      "name": "driver_name"
+                    },
+                    {
+                      "expression": "SUM(`race_wins`)",
+                      "name": "value"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`wins_rank` <= 10 AND `race_wins` > 0"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main"
+              },
+              "encodings": {
+                "color": {
+                  "fieldName": "driver_name",
+                  "legend": {
+                    "hide": true
+                  },
+                  "scale": {
+                    "mappings": [
+                      {
+                        "color": "#F5B342",
+                        "value": "Lando Norris"
+                      },
+                      {
+                        "color": "#548CE0",
+                        "value": "Max Verstappen"
+                      },
+                      {
+                        "color": "#EB7942",
+                        "value": "Oscar Piastri"
+                      },
+                      {
+                        "color": "#35C5B5",
+                        "value": "George Russell"
+                      },
+                      {
+                        "color": "#E95765",
+                        "value": "Charles Leclerc"
+                      },
+                      {
+                        "color": "#B85F86",
+                        "value": "Lewis Hamilton"
+                      },
+                      {
+                        "color": "#7CD8C5",
+                        "value": "Kimi Antonelli"
+                      },
+                      {
+                        "color": "#56ADD9",
+                        "value": "Alexander Albon"
+                      },
+                      {
+                        "color": "#8198ED",
+                        "value": "Carlos Sainz Jr."
+                      },
+                      {
+                        "color": "#35A076",
+                        "value": "Fernando Alonso"
+                      },
+                      {
+                        "color": "#9AC748",
+                        "value": "Nico Hülkenberg"
+                      },
+                      {
+                        "color": "#A293E0",
+                        "value": "Isack Hadjar"
+                      },
+                      {
+                        "color": "#B7BCC7",
+                        "value": "Oliver Bearman"
+                      },
+                      {
+                        "color": "#887AC4",
+                        "value": "Liam Lawson"
+                      },
+                      {
+                        "color": "#D3A8AC",
+                        "value": "Esteban Ocon"
+                      },
+                      {
+                        "color": "#7BAA7A",
+                        "value": "Lance Stroll"
+                      },
+                      {
+                        "color": "#849AC2",
+                        "value": "Yuki Tsunoda"
+                      },
+                      {
+                        "color": "#E98BC0",
+                        "value": "Pierre Gasly"
+                      },
+                      {
+                        "color": "#BDD980",
+                        "value": "Gabriel Bortoleto"
+                      },
+                      {
+                        "color": "#D5A1C6",
+                        "value": "Franco Colapinto"
+                      },
+                      {
+                        "color": "#BD96C2",
+                        "value": "Jack Doohan"
+                      },
+                      {
+                        "color": "#A07DD0",
+                        "value": "Sebastian Vettel"
+                      },
+                      {
+                        "color": "#DA975C",
+                        "value": "Daniel Ricciardo"
+                      },
+                      {
+                        "color": "#63A9C1",
+                        "value": "Valtteri Bottas"
+                      },
+                      {
+                        "color": "#82A568",
+                        "value": "Sergio Pérez"
+                      },
+                      {
+                        "color": "#CB9275",
+                        "value": "Jenson Button"
+                      },
+                      {
+                        "color": "#57B79B",
+                        "value": "Nico Rosberg"
+                      },
+                      {
+                        "color": "#7281C2",
+                        "value": "Mark Webber"
+                      },
+                      {
+                        "color": "#C66F74",
+                        "value": "Kimi Räikkönen"
+                      },
+                      {
+                        "color": "#E5484D",
+                        "value": "Michael Schumacher"
+                      },
+                      {
+                        "color": "#E8B547",
+                        "value": "Juan Manuel Fangio"
+                      },
+                      {
+                        "color": "#64A7D9",
+                        "value": "Alain Prost"
+                      },
+                      {
+                        "color": "#47B98B",
+                        "value": "Ayrton Senna"
+                      },
+                      {
+                        "color": "#BD9168",
+                        "value": "Jack Brabham"
+                      },
+                      {
+                        "color": "#9B80C7",
+                        "value": "Jackie Stewart"
+                      },
+                      {
+                        "color": "#DB7C80",
+                        "value": "Niki Lauda"
+                      },
+                      {
+                        "color": "#829FC0",
+                        "value": "Nelson Piquet"
+                      },
+                      {
+                        "color": "#6FAF97",
+                        "value": "Jim Clark"
+                      },
+                      {
+                        "color": "#409A72",
+                        "value": "Lotus"
+                      },
+                      {
+                        "color": "#AD9563",
+                        "value": "Brabham"
+                      },
+                      {
+                        "color": "#A783C7",
+                        "value": "Cooper"
+                      },
+                      {
+                        "color": "#73A793",
+                        "value": "BRM"
+                      },
+                      {
+                        "color": "#75A1D1",
+                        "value": "Tyrrell"
+                      }
+                    ],
+                    "type": "categorical"
+                  }
+                },
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "displayName": "Grand Prix wins",
+                  "fieldName": "value",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "fieldName": "driver_name",
+                  "scale": {
+                    "sort": {
+                      "by": "x-reversed"
+                    },
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Grand Prix wins - Top 10"
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 8,
+            "width": 6,
+            "x": 6,
+            "y": 8
+          },
+          "widget": {
+            "name": "driver_career_race_podiums",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "driver_career",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`driver_name`",
+                      "name": "driver_name"
+                    },
+                    {
+                      "expression": "SUM(`race_podiums`)",
+                      "name": "value"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`podiums_rank` <= 10 AND `race_podiums` > 0"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main"
+              },
+              "encodings": {
+                "color": {
+                  "fieldName": "driver_name",
+                  "legend": {
+                    "hide": true
+                  },
+                  "scale": {
+                    "mappings": [
+                      {
+                        "color": "#F5B342",
+                        "value": "Lando Norris"
+                      },
+                      {
+                        "color": "#548CE0",
+                        "value": "Max Verstappen"
+                      },
+                      {
+                        "color": "#EB7942",
+                        "value": "Oscar Piastri"
+                      },
+                      {
+                        "color": "#35C5B5",
+                        "value": "George Russell"
+                      },
+                      {
+                        "color": "#E95765",
+                        "value": "Charles Leclerc"
+                      },
+                      {
+                        "color": "#B85F86",
+                        "value": "Lewis Hamilton"
+                      },
+                      {
+                        "color": "#7CD8C5",
+                        "value": "Kimi Antonelli"
+                      },
+                      {
+                        "color": "#56ADD9",
+                        "value": "Alexander Albon"
+                      },
+                      {
+                        "color": "#8198ED",
+                        "value": "Carlos Sainz Jr."
+                      },
+                      {
+                        "color": "#35A076",
+                        "value": "Fernando Alonso"
+                      },
+                      {
+                        "color": "#9AC748",
+                        "value": "Nico Hülkenberg"
+                      },
+                      {
+                        "color": "#A293E0",
+                        "value": "Isack Hadjar"
+                      },
+                      {
+                        "color": "#B7BCC7",
+                        "value": "Oliver Bearman"
+                      },
+                      {
+                        "color": "#887AC4",
+                        "value": "Liam Lawson"
+                      },
+                      {
+                        "color": "#D3A8AC",
+                        "value": "Esteban Ocon"
+                      },
+                      {
+                        "color": "#7BAA7A",
+                        "value": "Lance Stroll"
+                      },
+                      {
+                        "color": "#849AC2",
+                        "value": "Yuki Tsunoda"
+                      },
+                      {
+                        "color": "#E98BC0",
+                        "value": "Pierre Gasly"
+                      },
+                      {
+                        "color": "#BDD980",
+                        "value": "Gabriel Bortoleto"
+                      },
+                      {
+                        "color": "#D5A1C6",
+                        "value": "Franco Colapinto"
+                      },
+                      {
+                        "color": "#BD96C2",
+                        "value": "Jack Doohan"
+                      },
+                      {
+                        "color": "#A07DD0",
+                        "value": "Sebastian Vettel"
+                      },
+                      {
+                        "color": "#DA975C",
+                        "value": "Daniel Ricciardo"
+                      },
+                      {
+                        "color": "#63A9C1",
+                        "value": "Valtteri Bottas"
+                      },
+                      {
+                        "color": "#82A568",
+                        "value": "Sergio Pérez"
+                      },
+                      {
+                        "color": "#CB9275",
+                        "value": "Jenson Button"
+                      },
+                      {
+                        "color": "#57B79B",
+                        "value": "Nico Rosberg"
+                      },
+                      {
+                        "color": "#7281C2",
+                        "value": "Mark Webber"
+                      },
+                      {
+                        "color": "#C66F74",
+                        "value": "Kimi Räikkönen"
+                      },
+                      {
+                        "color": "#E5484D",
+                        "value": "Michael Schumacher"
+                      },
+                      {
+                        "color": "#E8B547",
+                        "value": "Juan Manuel Fangio"
+                      },
+                      {
+                        "color": "#64A7D9",
+                        "value": "Alain Prost"
+                      },
+                      {
+                        "color": "#47B98B",
+                        "value": "Ayrton Senna"
+                      },
+                      {
+                        "color": "#BD9168",
+                        "value": "Jack Brabham"
+                      },
+                      {
+                        "color": "#9B80C7",
+                        "value": "Jackie Stewart"
+                      },
+                      {
+                        "color": "#DB7C80",
+                        "value": "Niki Lauda"
+                      },
+                      {
+                        "color": "#829FC0",
+                        "value": "Nelson Piquet"
+                      },
+                      {
+                        "color": "#6FAF97",
+                        "value": "Jim Clark"
+                      },
+                      {
+                        "color": "#409A72",
+                        "value": "Lotus"
+                      },
+                      {
+                        "color": "#AD9563",
+                        "value": "Brabham"
+                      },
+                      {
+                        "color": "#A783C7",
+                        "value": "Cooper"
+                      },
+                      {
+                        "color": "#73A793",
+                        "value": "BRM"
+                      },
+                      {
+                        "color": "#75A1D1",
+                        "value": "Tyrrell"
+                      }
+                    ],
+                    "type": "categorical"
+                  }
+                },
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "displayName": "Grand Prix podiums",
+                  "fieldName": "value",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "fieldName": "driver_name",
+                  "scale": {
+                    "sort": {
+                      "by": "x-reversed"
+                    },
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Grand Prix podiums - Top 10"
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 1,
+            "width": 12,
+            "x": 0,
+            "y": 16
+          },
+          "widget": {
+            "multilineTextboxSpec": {
+              "lines": [
+                "F1DB v2026.14.0 | 1950-2026; 2026 is partial. Grand Prix only; no Sprint wins or podiums."
+              ]
+            },
+            "name": "driver_career_scope"
+          }
+        }
+      ],
+      "layoutVersion": "GRID_V1",
+      "name": "driver_career",
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "displayName": "Constructor Career",
+      "layout": [
+        {
+          "position": {
+            "height": 8,
+            "width": 7,
+            "x": 0,
+            "y": 0
+          },
+          "widget": {
+            "name": "constructor_career_table",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "constructor_career",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`constructor_name`",
+                      "name": "constructor_name"
+                    },
+                    {
+                      "expression": "`championships`",
+                      "name": "championships"
+                    },
+                    {
+                      "expression": "`race_wins`",
+                      "name": "race_wins"
+                    },
+                    {
+                      "expression": "`race_podiums`",
+                      "name": "race_podiums"
+                    },
+                    {
+                      "expression": "`race_weekends`",
+                      "name": "race_weekends"
+                    }
+                  ],
+                  "orders": [
+                    {
+                      "direction": "DESC",
+                      "expression": "`championships`"
+                    },
+                    {
+                      "direction": "DESC",
+                      "expression": "`race_wins`"
+                    },
+                    {
+                      "direction": "ASC",
+                      "expression": "`constructor_name`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main"
+              },
+              "encodings": {
+                "columns": [
+                  {
+                    "displayName": "Constructor",
+                    "fieldName": "constructor_name"
+                  },
+                  {
+                    "displayName": "Titles",
+                    "fieldName": "championships"
+                  },
+                  {
+                    "displayName": "Wins",
+                    "fieldName": "race_wins"
+                  },
+                  {
+                    "displayName": "Podiums",
+                    "fieldName": "race_podiums"
+                  },
+                  {
+                    "displayName": "Race weekends",
+                    "fieldName": "race_weekends"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Career records"
+              },
+              "version": 2,
+              "widgetType": "table"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 8,
+            "width": 5,
+            "x": 7,
+            "y": 0
+          },
+          "widget": {
+            "name": "constructor_career_championships",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "constructor_career",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`constructor_name`",
+                      "name": "constructor_name"
+                    },
+                    {
+                      "expression": "SUM(`championships`)",
+                      "name": "value"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`titles_rank` <= 10 AND `championships` > 0"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main"
+              },
+              "encodings": {
+                "color": {
+                  "fieldName": "constructor_name",
+                  "legend": {
+                    "hide": true
+                  },
+                  "scale": {
+                    "mappings": [
+                      {
+                        "color": "#F59E0B",
+                        "value": "McLaren"
+                      },
+                      {
+                        "color": "#E5484D",
+                        "value": "Ferrari"
+                      },
+                      {
+                        "color": "#4C78D8",
+                        "value": "Red Bull"
+                      },
+                      {
+                        "color": "#2EC4B6",
+                        "value": "Mercedes"
+                      },
+                      {
+                        "color": "#45A3F5",
+                        "value": "Williams"
+                      },
+                      {
+                        "color": "#289D80",
+                        "value": "Aston Martin"
+                      },
+                      {
+                        "color": "#EA78BA",
+                        "value": "Alpine"
+                      },
+                      {
+                        "color": "#B5B8C2",
+                        "value": "Haas"
+                      },
+                      {
+                        "color": "#74BD45",
+                        "value": "Kick Sauber"
+                      },
+                      {
+                        "color": "#74BD45",
+                        "value": "Sauber"
+                      },
+                      {
+                        "color": "#8F8CE7",
+                        "value": "RB"
+                      },
+                      {
+                        "color": "#8F8CE7",
+                        "value": "Racing Bulls"
+                      },
+                      {
+                        "color": "#7A9BBF",
+                        "value": "AlphaTauri"
+                      },
+                      {
+                        "color": "#7A9BBF",
+                        "value": "Toro Rosso"
+                      },
+                      {
+                        "color": "#E7C93C",
+                        "value": "Renault"
+                      },
+                      {
+                        "color": "#E799C1",
+                        "value": "Racing Point"
+                      },
+                      {
+                        "color": "#D787BA",
+                        "value": "Force India"
+                      },
+                      {
+                        "color": "#C55C70",
+                        "value": "Alfa Romeo"
+                      },
+                      {
+                        "color": "#409A72",
+                        "value": "Lotus"
+                      },
+                      {
+                        "color": "#4D9E66",
+                        "value": "Lotus Racing"
+                      },
+                      {
+                        "color": "#4D9E66",
+                        "value": "Caterham"
+                      },
+                      {
+                        "color": "#CB6F55",
+                        "value": "Marussia"
+                      },
+                      {
+                        "color": "#CB6F55",
+                        "value": "Virgin"
+                      },
+                      {
+                        "color": "#F08266",
+                        "value": "Manor"
+                      },
+                      {
+                        "color": "#C7AC7D",
+                        "value": "HRT"
+                      },
+                      {
+                        "color": "#D95762",
+                        "value": "Audi"
+                      },
+                      {
+                        "color": "#9BA7B4",
+                        "value": "Cadillac"
+                      },
+                      {
+                        "color": "#E5484D",
+                        "value": "Michael Schumacher"
+                      },
+                      {
+                        "color": "#E8B547",
+                        "value": "Juan Manuel Fangio"
+                      },
+                      {
+                        "color": "#64A7D9",
+                        "value": "Alain Prost"
+                      },
+                      {
+                        "color": "#47B98B",
+                        "value": "Ayrton Senna"
+                      },
+                      {
+                        "color": "#BD9168",
+                        "value": "Jack Brabham"
+                      },
+                      {
+                        "color": "#9B80C7",
+                        "value": "Jackie Stewart"
+                      },
+                      {
+                        "color": "#DB7C80",
+                        "value": "Niki Lauda"
+                      },
+                      {
+                        "color": "#829FC0",
+                        "value": "Nelson Piquet"
+                      },
+                      {
+                        "color": "#6FAF97",
+                        "value": "Jim Clark"
+                      },
+                      {
+                        "color": "#AD9563",
+                        "value": "Brabham"
+                      },
+                      {
+                        "color": "#A783C7",
+                        "value": "Cooper"
+                      },
+                      {
+                        "color": "#73A793",
+                        "value": "BRM"
+                      },
+                      {
+                        "color": "#75A1D1",
+                        "value": "Tyrrell"
+                      }
+                    ],
+                    "type": "categorical"
+                  }
+                },
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "displayName": "Championships",
+                  "fieldName": "value",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "fieldName": "constructor_name",
+                  "scale": {
+                    "sort": {
+                      "by": "x-reversed"
+                    },
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Championships - Top 10"
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 8,
+            "width": 6,
+            "x": 0,
+            "y": 8
+          },
+          "widget": {
+            "name": "constructor_career_race_wins",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "constructor_career",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`constructor_name`",
+                      "name": "constructor_name"
+                    },
+                    {
+                      "expression": "SUM(`race_wins`)",
+                      "name": "value"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`wins_rank` <= 10 AND `race_wins` > 0"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main"
+              },
+              "encodings": {
+                "color": {
+                  "fieldName": "constructor_name",
+                  "legend": {
+                    "hide": true
+                  },
+                  "scale": {
+                    "mappings": [
+                      {
+                        "color": "#F59E0B",
+                        "value": "McLaren"
+                      },
+                      {
+                        "color": "#E5484D",
+                        "value": "Ferrari"
+                      },
+                      {
+                        "color": "#4C78D8",
+                        "value": "Red Bull"
+                      },
+                      {
+                        "color": "#2EC4B6",
+                        "value": "Mercedes"
+                      },
+                      {
+                        "color": "#45A3F5",
+                        "value": "Williams"
+                      },
+                      {
+                        "color": "#289D80",
+                        "value": "Aston Martin"
+                      },
+                      {
+                        "color": "#EA78BA",
+                        "value": "Alpine"
+                      },
+                      {
+                        "color": "#B5B8C2",
+                        "value": "Haas"
+                      },
+                      {
+                        "color": "#74BD45",
+                        "value": "Kick Sauber"
+                      },
+                      {
+                        "color": "#74BD45",
+                        "value": "Sauber"
+                      },
+                      {
+                        "color": "#8F8CE7",
+                        "value": "RB"
+                      },
+                      {
+                        "color": "#8F8CE7",
+                        "value": "Racing Bulls"
+                      },
+                      {
+                        "color": "#7A9BBF",
+                        "value": "AlphaTauri"
+                      },
+                      {
+                        "color": "#7A9BBF",
+                        "value": "Toro Rosso"
+                      },
+                      {
+                        "color": "#E7C93C",
+                        "value": "Renault"
+                      },
+                      {
+                        "color": "#E799C1",
+                        "value": "Racing Point"
+                      },
+                      {
+                        "color": "#D787BA",
+                        "value": "Force India"
+                      },
+                      {
+                        "color": "#C55C70",
+                        "value": "Alfa Romeo"
+                      },
+                      {
+                        "color": "#409A72",
+                        "value": "Lotus"
+                      },
+                      {
+                        "color": "#4D9E66",
+                        "value": "Lotus Racing"
+                      },
+                      {
+                        "color": "#4D9E66",
+                        "value": "Caterham"
+                      },
+                      {
+                        "color": "#CB6F55",
+                        "value": "Marussia"
+                      },
+                      {
+                        "color": "#CB6F55",
+                        "value": "Virgin"
+                      },
+                      {
+                        "color": "#F08266",
+                        "value": "Manor"
+                      },
+                      {
+                        "color": "#C7AC7D",
+                        "value": "HRT"
+                      },
+                      {
+                        "color": "#D95762",
+                        "value": "Audi"
+                      },
+                      {
+                        "color": "#9BA7B4",
+                        "value": "Cadillac"
+                      },
+                      {
+                        "color": "#E5484D",
+                        "value": "Michael Schumacher"
+                      },
+                      {
+                        "color": "#E8B547",
+                        "value": "Juan Manuel Fangio"
+                      },
+                      {
+                        "color": "#64A7D9",
+                        "value": "Alain Prost"
+                      },
+                      {
+                        "color": "#47B98B",
+                        "value": "Ayrton Senna"
+                      },
+                      {
+                        "color": "#BD9168",
+                        "value": "Jack Brabham"
+                      },
+                      {
+                        "color": "#9B80C7",
+                        "value": "Jackie Stewart"
+                      },
+                      {
+                        "color": "#DB7C80",
+                        "value": "Niki Lauda"
+                      },
+                      {
+                        "color": "#829FC0",
+                        "value": "Nelson Piquet"
+                      },
+                      {
+                        "color": "#6FAF97",
+                        "value": "Jim Clark"
+                      },
+                      {
+                        "color": "#AD9563",
+                        "value": "Brabham"
+                      },
+                      {
+                        "color": "#A783C7",
+                        "value": "Cooper"
+                      },
+                      {
+                        "color": "#73A793",
+                        "value": "BRM"
+                      },
+                      {
+                        "color": "#75A1D1",
+                        "value": "Tyrrell"
+                      }
+                    ],
+                    "type": "categorical"
+                  }
+                },
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "displayName": "Grand Prix wins",
+                  "fieldName": "value",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "fieldName": "constructor_name",
+                  "scale": {
+                    "sort": {
+                      "by": "x-reversed"
+                    },
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Grand Prix wins - Top 10"
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 8,
+            "width": 6,
+            "x": 6,
+            "y": 8
+          },
+          "widget": {
+            "name": "constructor_career_race_podiums",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "constructor_career",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`constructor_name`",
+                      "name": "constructor_name"
+                    },
+                    {
+                      "expression": "SUM(`race_podiums`)",
+                      "name": "value"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`podiums_rank` <= 10 AND `race_podiums` > 0"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main"
+              },
+              "encodings": {
+                "color": {
+                  "fieldName": "constructor_name",
+                  "legend": {
+                    "hide": true
+                  },
+                  "scale": {
+                    "mappings": [
+                      {
+                        "color": "#F59E0B",
+                        "value": "McLaren"
+                      },
+                      {
+                        "color": "#E5484D",
+                        "value": "Ferrari"
+                      },
+                      {
+                        "color": "#4C78D8",
+                        "value": "Red Bull"
+                      },
+                      {
+                        "color": "#2EC4B6",
+                        "value": "Mercedes"
+                      },
+                      {
+                        "color": "#45A3F5",
+                        "value": "Williams"
+                      },
+                      {
+                        "color": "#289D80",
+                        "value": "Aston Martin"
+                      },
+                      {
+                        "color": "#EA78BA",
+                        "value": "Alpine"
+                      },
+                      {
+                        "color": "#B5B8C2",
+                        "value": "Haas"
+                      },
+                      {
+                        "color": "#74BD45",
+                        "value": "Kick Sauber"
+                      },
+                      {
+                        "color": "#74BD45",
+                        "value": "Sauber"
+                      },
+                      {
+                        "color": "#8F8CE7",
+                        "value": "RB"
+                      },
+                      {
+                        "color": "#8F8CE7",
+                        "value": "Racing Bulls"
+                      },
+                      {
+                        "color": "#7A9BBF",
+                        "value": "AlphaTauri"
+                      },
+                      {
+                        "color": "#7A9BBF",
+                        "value": "Toro Rosso"
+                      },
+                      {
+                        "color": "#E7C93C",
+                        "value": "Renault"
+                      },
+                      {
+                        "color": "#E799C1",
+                        "value": "Racing Point"
+                      },
+                      {
+                        "color": "#D787BA",
+                        "value": "Force India"
+                      },
+                      {
+                        "color": "#C55C70",
+                        "value": "Alfa Romeo"
+                      },
+                      {
+                        "color": "#409A72",
+                        "value": "Lotus"
+                      },
+                      {
+                        "color": "#4D9E66",
+                        "value": "Lotus Racing"
+                      },
+                      {
+                        "color": "#4D9E66",
+                        "value": "Caterham"
+                      },
+                      {
+                        "color": "#CB6F55",
+                        "value": "Marussia"
+                      },
+                      {
+                        "color": "#CB6F55",
+                        "value": "Virgin"
+                      },
+                      {
+                        "color": "#F08266",
+                        "value": "Manor"
+                      },
+                      {
+                        "color": "#C7AC7D",
+                        "value": "HRT"
+                      },
+                      {
+                        "color": "#D95762",
+                        "value": "Audi"
+                      },
+                      {
+                        "color": "#9BA7B4",
+                        "value": "Cadillac"
+                      },
+                      {
+                        "color": "#E5484D",
+                        "value": "Michael Schumacher"
+                      },
+                      {
+                        "color": "#E8B547",
+                        "value": "Juan Manuel Fangio"
+                      },
+                      {
+                        "color": "#64A7D9",
+                        "value": "Alain Prost"
+                      },
+                      {
+                        "color": "#47B98B",
+                        "value": "Ayrton Senna"
+                      },
+                      {
+                        "color": "#BD9168",
+                        "value": "Jack Brabham"
+                      },
+                      {
+                        "color": "#9B80C7",
+                        "value": "Jackie Stewart"
+                      },
+                      {
+                        "color": "#DB7C80",
+                        "value": "Niki Lauda"
+                      },
+                      {
+                        "color": "#829FC0",
+                        "value": "Nelson Piquet"
+                      },
+                      {
+                        "color": "#6FAF97",
+                        "value": "Jim Clark"
+                      },
+                      {
+                        "color": "#AD9563",
+                        "value": "Brabham"
+                      },
+                      {
+                        "color": "#A783C7",
+                        "value": "Cooper"
+                      },
+                      {
+                        "color": "#73A793",
+                        "value": "BRM"
+                      },
+                      {
+                        "color": "#75A1D1",
+                        "value": "Tyrrell"
+                      }
+                    ],
+                    "type": "categorical"
+                  }
+                },
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "displayName": "Grand Prix podiums",
+                  "fieldName": "value",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "fieldName": "constructor_name",
+                  "scale": {
+                    "sort": {
+                      "by": "x-reversed"
+                    },
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Grand Prix podiums - Top 10"
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 1,
+            "width": 12,
+            "x": 0,
+            "y": 16
+          },
+          "widget": {
+            "multilineTextboxSpec": {
+              "lines": [
+                "F1DB v2026.14.0 | 1950-2026; 2026 is partial. Grand Prix only; no Sprint wins or podiums. Constructor titles began in 1958; shared cars count once."
+              ]
+            },
+            "name": "constructor_career_scope"
+          }
+        }
+      ],
+      "layoutVersion": "GRID_V1",
+      "name": "constructor_career",
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "displayName": "Race Results",
+      "layout": [
+        {
+          "position": {
+            "height": 1,
+            "width": 3,
+            "x": 0,
+            "y": 0
+          },
+          "widget": {
+            "name": "results_season_filter",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "results",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`season`",
+                      "name": "season"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "season",
+                    "queryName": "main"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Season"
+              },
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "INTEGER",
+                    "values": [
+                      {
+                        "value": "2025"
+                      }
+                    ]
+                  }
+                }
+              },
+              "version": 2,
+              "widgetType": "filter-single-select"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 1,
+            "width": 5,
+            "x": 3,
+            "y": 0
+          },
+          "widget": {
+            "name": "results_grand_prix_filter",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "results",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`grand_prix`",
+                      "name": "grand_prix"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "grand_prix",
+                    "queryName": "main"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Grand Prix"
+              },
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "STRING",
+                    "values": [
+                      {
+                        "value": "01 - AUSTRALIA"
+                      }
+                    ]
+                  }
+                }
+              },
+              "version": 2,
+              "widgetType": "filter-single-select"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 1,
+            "width": 4,
+            "x": 8,
+            "y": 0
+          },
+          "widget": {
+            "name": "results_session_type_filter",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "results",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`session_type`",
+                      "name": "session_type"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "session_type",
+                    "queryName": "main"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Session"
+              },
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "STRING",
+                    "values": [
+                      {
+                        "value": "RACE"
+                      }
+                    ]
+                  }
+                }
+              },
+              "version": 2,
+              "widgetType": "filter-single-select"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 7,
+            "width": 12,
+            "x": 0,
+            "y": 1
+          },
+          "widget": {
+            "name": "results_detail",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "results",
+                  "disaggregated": true,
+                  "fields": [
+                    {
+                      "expression": "`finish_position`",
+                      "name": "finish_position"
+                    },
+                    {
+                      "expression": "`driver_name`",
+                      "name": "driver_name"
+                    },
+                    {
+                      "expression": "`constructor_name`",
+                      "name": "constructor_name"
+                    },
+                    {
+                      "expression": "`points`",
+                      "name": "points"
+                    },
+                    {
+                      "expression": "`grid_position`",
+                      "name": "grid_position"
+                    },
+                    {
+                      "expression": "`result_status`",
+                      "name": "result_status"
+                    },
+                    {
+                      "expression": "`season`",
+                      "name": "season"
+                    },
+                    {
+                      "expression": "`round`",
+                      "name": "round"
+                    },
+                    {
+                      "expression": "`session_type`",
+                      "name": "session_type"
+                    },
+                    {
+                      "expression": "`classification_order`",
+                      "name": "classification_order"
+                    }
+                  ],
+                  "orders": [
+                    {
+                      "direction": "ASC",
+                      "expression": "`season`"
+                    },
+                    {
+                      "direction": "ASC",
+                      "expression": "`round`"
+                    },
+                    {
+                      "direction": "ASC",
+                      "expression": "`session_type`"
+                    },
+                    {
+                      "direction": "ASC",
+                      "expression": "`classification_order`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main"
+              },
+              "encodings": {
+                "columns": [
+                  {
+                    "displayName": "Position",
+                    "fieldName": "finish_position"
+                  },
+                  {
+                    "displayName": "Driver",
+                    "fieldName": "driver_name"
+                  },
+                  {
+                    "displayName": "Team",
+                    "fieldName": "constructor_name"
+                  },
+                  {
+                    "displayName": "Points",
+                    "fieldName": "points",
+                    "format": {
+                      "abbreviation": "none",
+                      "decimalPlaces": {
+                        "type": "all"
+                      },
+                      "hideGroupSeparator": true,
+                      "type": "number-plain"
+                    }
+                  },
+                  {
+                    "displayName": "Grid",
+                    "fieldName": "grid_position"
+                  },
+                  {
+                    "displayName": "Status",
+                    "fieldName": "result_status"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Session classification"
+              },
+              "version": 2,
+              "widgetType": "table"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 7,
+            "width": 12,
+            "x": 0,
+            "y": 8
+          },
+          "widget": {
+            "name": "results_points",
+            "queries": [
+              {
+                "name": "main",
+                "query": {
+                  "datasetName": "results",
+                  "disaggregated": false,
+                  "fields": [
+                    {
+                      "expression": "`driver_name`",
+                      "name": "driver_name"
+                    },
+                    {
+                      "expression": "SUM(`points`)",
+                      "name": "value"
+                    },
+                    {
+                      "expression": "`constructor_name`",
+                      "name": "constructor_name"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "data": {
+                "queryName": "main"
+              },
+              "encodings": {
+                "color": {
+                  "fieldName": "constructor_name",
+                  "legend": {
+                    "hide": true
+                  },
+                  "scale": {
+                    "mappings": [
+                      {
+                        "color": "#F59E0B",
+                        "value": "McLaren"
+                      },
+                      {
+                        "color": "#E5484D",
+                        "value": "Ferrari"
+                      },
+                      {
+                        "color": "#4C78D8",
+                        "value": "Red Bull"
+                      },
+                      {
+                        "color": "#2EC4B6",
+                        "value": "Mercedes"
+                      },
+                      {
+                        "color": "#45A3F5",
+                        "value": "Williams"
+                      },
+                      {
+                        "color": "#289D80",
+                        "value": "Aston Martin"
+                      },
+                      {
+                        "color": "#EA78BA",
+                        "value": "Alpine"
+                      },
+                      {
+                        "color": "#B5B8C2",
+                        "value": "Haas"
+                      },
+                      {
+                        "color": "#74BD45",
+                        "value": "Kick Sauber"
+                      },
+                      {
+                        "color": "#74BD45",
+                        "value": "Sauber"
+                      },
+                      {
+                        "color": "#8F8CE7",
+                        "value": "RB"
+                      },
+                      {
+                        "color": "#8F8CE7",
+                        "value": "Racing Bulls"
+                      },
+                      {
+                        "color": "#7A9BBF",
+                        "value": "AlphaTauri"
+                      },
+                      {
+                        "color": "#7A9BBF",
+                        "value": "Toro Rosso"
+                      },
+                      {
+                        "color": "#E7C93C",
+                        "value": "Renault"
+                      },
+                      {
+                        "color": "#E799C1",
+                        "value": "Racing Point"
+                      },
+                      {
+                        "color": "#D787BA",
+                        "value": "Force India"
+                      },
+                      {
+                        "color": "#C55C70",
+                        "value": "Alfa Romeo"
+                      },
+                      {
+                        "color": "#BEA46D",
+                        "value": "Lotus"
+                      },
+                      {
+                        "color": "#4D9E66",
+                        "value": "Lotus Racing"
+                      },
+                      {
+                        "color": "#4D9E66",
+                        "value": "Caterham"
+                      },
+                      {
+                        "color": "#CB6F55",
+                        "value": "Marussia"
+                      },
+                      {
+                        "color": "#CB6F55",
+                        "value": "Virgin"
+                      },
+                      {
+                        "color": "#F08266",
+                        "value": "Manor"
+                      },
+                      {
+                        "color": "#C7AC7D",
+                        "value": "HRT"
+                      },
+                      {
+                        "color": "#D95762",
+                        "value": "Audi"
+                      },
+                      {
+                        "color": "#9BA7B4",
+                        "value": "Cadillac"
+                      }
+                    ],
+                    "type": "categorical"
+                  }
+                },
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "displayName": "Points",
+                  "fieldName": "value",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "fieldName": "driver_name",
+                  "scale": {
+                    "sort": {
+                      "by": "x-reversed"
+                    },
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Points by driver"
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          }
+        },
+        {
+          "position": {
+            "height": 1,
+            "width": 12,
+            "x": 0,
+            "y": 15
+          },
+          "widget": {
+            "multilineTextboxSpec": {
+              "lines": [
+                "Source: F1DB v2026.14.0 | 1950-2026; 2026 is partial. Race and Sprint results are separate; unclassified positions remain blank."
+              ]
+            },
+            "name": "results_scope"
+          }
+        }
+      ],
+      "layoutVersion": "GRID_V1",
+      "name": "race_results",
+      "pageType": "PAGE_TYPE_CANVAS"
+    }
+  ]
+}

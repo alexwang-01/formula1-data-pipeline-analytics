@@ -1,0 +1,33 @@
+bundle:
+  name: formula1-data-pipeline-analytics-sdp
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Existing Unity Catalog catalog with permission to create the SDP schemas.
+  release_tag:
+    default: v2026.14.0
+  release_seq:
+    default: "2026014000"
+  min_season:
+    default: "1950"
+
+workspace:
+  root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+
+sync:
+  paths:
+    - .
+    - ../notebooks/00-common
+  exclude:
+    - .databricks/**
+    - "**/__pycache__/**"
+    - ../notebooks/00-common/context.py
+
+targets:
+  dev:
+    default: true
+    presets:
+      pipelines_development: false

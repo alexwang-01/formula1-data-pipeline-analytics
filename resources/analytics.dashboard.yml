@@ -1,0 +1,9 @@
+resources:
+  dashboards:
+    formula1_analytics:
+      display_name: Formula 1 - Championships & Career Records
+      file_path: ../dashboards/formula1.lvdash.json
+      warehouse_id: ${var.warehouse_id}
+      dataset_catalog: ${var.catalog}
+      dataset_schema: f1pa_gold
+      embed_credentials: false
